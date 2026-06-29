@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Assistant</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:#0b0f17;color:#d6e0f0;font-family:"Segoe UI",Arial,sans-serif}
+    .app{display:flex;flex-direction:column;height:100vh}
+    /* ── barra de marca + tabs ── */
+    .topbar{display:flex;align-items:center;gap:18px;height:48px;padding:0 18px;background:#0e1422;border-bottom:1px solid #1d2740;flex-shrink:0}
+    .brand{font-size:16px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
+    .brand .b-emoji{font-size:18px}
+    .tabs{display:flex;gap:4px}
+    .tab{padding:8px 16px;border-radius:8px 8px 0 0;font-size:13.5px;cursor:pointer;color:#8ea3c4;border:1px solid transparent;border-bottom:none}
+    .tab:hover{color:#c9d6ee;background:#16203a}
+    .tab.active{color:#fff;background:#0b0f17;border-color:#1d2740}
+    .panes{flex:1;min-height:0;position:relative}
+    .pane{position:absolute;inset:0;display:none;overflow:auto}
+    .pane.active{display:flex}
+    /* ── genérico ── */
+    .muted{color:#5b6b88}
+    .btn{border:none;border-radius:7px;background:#2563eb;color:#fff;padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer}
+    .btn:hover{background:#1d4ed8}
+    .btn.ghost{background:#1b2c4d}.btn.ghost:hover{background:#24386180}
+    table{width:100%;border-collapse:collapse;font-size:13.5px}
+    th,td{text-align:left;padding:10px 14px;border-bottom:1px solid #1a2440}
+    th{color:#7da0d8;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+    tbody tr{cursor:pointer} tbody tr:hover{background:#13203a}
+    .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+    .pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;background:#1b2c4d;color:#9fc3ff}
+    /* estados (colores semáforo del flujo) */
+    .st-pendiente{background:#2a3550;color:#9fb2d8}
+    .st-definicion{background:#1e3a5f;color:#7db1ff}
+    .st-realizacion,.st-tests_auto,.st-ejecucion_tests{background:#3a2f5f;color:#c4a8ff}
+    .st-aceptacion{background:#5a4410;color:#ffd580}
+    .st-commit{background:#14432a;color:#5fd38a}
+    .st-hecho{background:#14432a;color:#7ee2a8}
+    /* ── Tareas: lista ── */
+    .wrap{padding:20px 26px;width:100%}
+    .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .head h2{margin:0;font-size:18px;color:#fff}
+    /* ── Tareas: detalle ── */
+    .detail{display:flex;flex-direction:column;width:100%;height:100%}
+    .dt-bar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:#0e1422;border-bottom:1px solid #1d2740;flex-shrink:0}
+    .dt-bar h2{margin:0;font-size:16px;color:#fff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .stepper{display:flex;gap:6px;flex-wrap:wrap;padding:10px 22px;background:#0c1322;border-bottom:1px solid #16203a;flex-shrink:0}
+    .step{font-size:11px;padding:3px 9px;border-radius:999px;background:#141d33;color:#5b6b88;white-space:nowrap}
+    .step.done{background:#14321f;color:#5fd38a}
+    .step.now{background:#1e3a5f;color:#fff;font-weight:700}
+    .dt-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;padding:18px 22px;gap:16px}
+    .card{background:#0e1626;border:1px solid #1a2640;border-radius:10px;overflow:hidden}
+    .card>.ch{padding:9px 14px;font-size:12px;font-weight:700;color:#7da0d8;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #1a2640;background:#0c1322}
+    .card>.cb{padding:14px}
+    /* definición */
+    #defText{font-size:14px;line-height:1.6;color:#d6e0f0;white-space:pre-wrap}
+    /* chat */
+    .chat{display:flex;flex-direction:column;gap:10px;max-height:340px;overflow:auto;padding:14px}
+    .bub{max-width:78%;padding:9px 13px;border-radius:12px;font-size:13.5px;line-height:1.5;white-space:pre-wrap}
+    .bub.user{align-self:flex-end;background:#1d4ed8;color:#fff;border-bottom-right-radius:3px}
+    .bub.assistant{align-self:flex-start;background:#16203a;color:#d6e0f0;border-bottom-left-radius:3px}
+    .chat-in{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #1a2640;background:#0c1322}
+    .chat-in textarea{flex:1;resize:none;background:#0b1120;border:1px solid #243861;border-radius:8px;color:#e6eefc;padding:10px 12px;font-size:13.5px;font-family:inherit;min-height:42px;max-height:120px}
+    /* columnas de agentes */
+    .agents{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
+    .agent{flex:0 0 320px;display:flex;flex-direction:column;background:#0b1120;border:1px solid #1a2640;border-radius:10px;overflow:hidden;min-height:240px}
+    .agent .ah{padding:9px 12px;font-size:12.5px;font-weight:700;border-bottom:1px solid #1a2640;display:flex;align-items:center;gap:8px;background:#0c1424}
+    .agent.strat .ah{color:#ffd580}
+    .agent .ah .tag{font-size:10px;font-weight:600;padding:2px 7px;border-radius:6px;background:#1b2c4d;color:#9fc3ff}
+    .agent .alog{flex:1;padding:10px 12px;font-family:Consolas,Menlo,monospace;font-size:12px;color:#9fb2d8;white-space:pre-wrap;overflow:auto;min-height:0}
+    .dot-s{width:8px;height:8px;border-radius:50%;background:#30363d;flex-shrink:0}
+    .dot-s.running{background:#3fb950}.dot-s.exited{background:#f85149}
+    /* ── Terminal ── */
+    .term-layout{display:flex;height:100%;width:100%}
+    .side{width:220px;background:#0e1422;border-right:1px solid #1d2740;display:flex;flex-direction:column;flex-shrink:0}
+    .side .acts{padding:10px}
+    .side .acts button{width:100%}
+    .sess{flex:1;overflow-y:auto;padding:4px 10px}
+    .sess .it{padding:9px 10px;border-radius:7px;font-size:13px;cursor:pointer;color:#aebbd4;display:flex;justify-content:space-between;gap:6px;align-items:center}
+    .sess .it:hover{background:#16203a}.sess .it.active{background:#1b2c4d;color:#fff}
+    .sess .it .x{color:#ff8a8a;opacity:.6}.sess .it .x:hover{opacity:1}
+    .sess .it .sname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .rename-in{width:100%;background:#0b1120;border:1px solid #2563eb;border-radius:5px;color:#fff;font:inherit;font-size:13px;padding:2px 6px}
+    .rename-in:focus{outline:none}
+    .term-main{flex:1;display:flex;flex-direction:column;min-width:0}
+    .term-bar{height:38px;display:flex;align-items:center;gap:10px;padding:0 14px;background:#0e1422;border-bottom:1px solid #1d2740;font-size:13px;color:#8ea3c4}
+    .dot{width:8px;height:8px;border-radius:50%;background:#4ade80}.dot.off{background:#f87171}
+    #term{flex:1;padding:6px 8px;min-height:0}
+    .empty{flex:1;display:flex;align-items:center;justify-content:center;color:#5b6b88;font-size:14px;text-align:center;padding:20px}
+    .hint{font-size:12px;color:#5b6b88;margin-top:6px}
+    /* ── barra táctil (solo móvil): scroll del historial + flechas para elegir ── */
+    .touchbar{display:none}
+    /* ── cuadro "Copiar texto" (selección/copiado nativos del navegador) ── */
+    .copy-ov{position:fixed;inset:0;background:rgba(2,6,16,.78);display:none;align-items:center;justify-content:center;z-index:9999}
+    .copy-ov.on{display:flex}
+    .copy-box{width:min(900px,92vw);height:min(80vh,700px);background:#0e1626;border:1px solid #243861;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+    .copy-box .cbh{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #1a2640;color:#cfe0ff;font-size:13px}
+    .copy-box textarea{flex:1;width:100%;border:none;resize:none;background:#0b1120;color:#d6e0f0;font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.5;padding:12px 14px}
+    .copy-box textarea:focus{outline:none}
+    /* ── Móvil vertical: terminal a todo el ancho ── */
+    @media (max-width:700px){
+      .topbar{gap:10px;padding:0 12px}
+      .brand{font-size:14px}
+      .tabs{flex:1;overflow-x:auto}
+      .tab{padding:8px 11px;font-size:13px;white-space:nowrap}
+      .wrap{padding:14px}
+      .dt-bar,.stepper,.dt-body{padding-left:14px;padding-right:14px}
+      .bub{max-width:90%}
+      /* la barra lateral de sesiones pasa a ser una tira horizontal arriba */
+      .term-layout{flex-direction:column}
+      .side{width:100%;flex-direction:row;align-items:center;border-right:none;border-bottom:1px solid #1d2740}
+      .side .acts{padding:8px;flex-shrink:0}
+      .side .acts button{width:auto;white-space:nowrap;padding:8px 12px}
+      .sess{flex:1;display:flex;flex-direction:row;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;padding:6px 8px}
+      .sess .it{flex:0 0 auto;max-width:170px}
+      /* el terminal ocupa todo el ancho restante y conserva su scrollback táctil */
+      .term-main{min-width:0;width:100%}
+      .term-bar{height:auto;flex-wrap:wrap;padding:6px 10px;gap:6px}
+      #copyHint{display:none}
+      #term{padding:4px 4px 0;touch-action:pan-y}
+      .xterm .xterm-viewport{touch-action:pan-y;-webkit-overflow-scrolling:touch}
+      /* barra táctil al pie del terminal */
+      .touchbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:7px 8px;background:#0e1422;border-top:1px solid #1d2740;flex-shrink:0}
+      .tb-lbl{font-size:10px;color:#5b6b88;text-transform:uppercase;letter-spacing:.04em;margin:0 1px 0 4px}
+      .tb-btn{min-width:44px;height:40px;border:1px solid #243861;border-radius:8px;background:#16203a;color:#cfe0ff;font-size:17px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:0 10px;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
+      .tb-btn:active{background:#243861}
+      .tb-btn small{font-size:10px;font-weight:600}
+      .tb-btn.tb-ok{background:#14803a;border-color:#1d9b4a;color:#fff}
+      .tb-sep{width:1px;align-self:stretch;background:#1d2740;margin:2px}
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><span class="b-emoji">🤖</span> Assistant</div>
+    <div class="tabs">
+      <div class="tab active" data-tab="tareas">Tareas</div>
+      <div class="tab" data-tab="modulos">Módulos</div>
+      <div class="tab" data-tab="terminal">Terminal</div>
+    </div>
+  </div>
+
+  <div class="panes">
+    <!-- ════════════ TAREAS ════════════ -->
+    <section class="pane active" id="pane-tareas" style="flex-direction:column">
+      <!-- lista -->
+      <div class="wrap" id="taskList">
+        <div class="head">
+          <h2>Tareas</h2>
+          <button class="btn" id="btnNewTask">+ Nueva tarea</button>
+        </div>
+        <table>
+          <thead><tr><th>Tarea</th><th>Estado</th><th>Cambios guardados</th><th>Actualizada</th></tr></thead>
+          <tbody id="taskRows"><tr><td colspan="4" class="muted">Cargando…</td></tr></tbody>
+        </table>
+        <div class="hint">Cada tarea es una sesión de trabajo. Cuéntale al asistente qué quieres en lenguaje normal; él se encarga de lo técnico.</div>
+      </div>
+      <!-- detalle -->
+      <div class="detail" id="taskDetail" style="display:none">
+        <div class="dt-bar">
+          <button class="btn ghost" id="btnBack">← Volver</button>
+          <h2 id="dtTitle"></h2>
+          <span class="badge" id="dtBadge"></span>
+        </div>
+        <div class="stepper" id="dtStepper"></div>
+        <div class="dt-body">
+          <div class="card">
+            <div class="ch">Definición de la tarea</div>
+            <div class="cb"><div id="defText" class="muted">Aún sin definir. Escribe abajo lo que necesitas y el asistente resumirá aquí el objetivo de la tarea.</div></div>
+          </div>
+          <div class="card" style="display:flex;flex-direction:column">
+            <div class="ch">Conversación</div>
+            <div class="chat" id="dtChat"></div>
+            <div class="chat-in">
+              <textarea id="dtInput" placeholder="Escribe aquí lo que quieres conseguir…" rows="1"></textarea>
+              <button class="btn" id="dtSend">Enviar</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="ch" style="display:flex;align-items:center;gap:10px">Trabajo de los agentes
+              <span style="flex:1"></span>
+              <button class="btn" id="btnStart" style="display:none;padding:5px 12px;font-size:12px">▶ Empezar a desarrollar</button>
+              <button class="btn ghost" id="btnTest" style="display:none;padding:5px 12px;font-size:12px">🧪 Ejecutar tests</button>
+              <button class="btn" id="btnAccept" style="display:none;padding:5px 12px;font-size:12px;background:#14803a">✓ Aceptar y guardar</button>
+            </div>
+            <div class="cb"><div class="agents" id="dtAgents"></div></div>
+          </div>
+          <div class="card" id="dtCommitsCard" style="display:none">
+            <div class="ch">Cambios guardados</div>
+            <div class="cb"><div id="dtCommits"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════ MÓDULOS ════════════ -->
+    <section class="pane" id="pane-modulos" style="flex-direction:column">
+      <div class="wrap">
+        <div class="head"><h2>Módulos de la aplicación</h2></div>
+        <table>
+          <thead><tr><th>Módulo</th><th>Contrato (SPEC)</th><th>Ruta</th><th>Estado</th></tr></thead>
+          <tbody id="modRows"><tr><td colspan="4" class="muted">Cargando…</td></tr></tbody>
+        </table>
+        <div class="hint">Cada módulo (o «sección») es una parte independiente de la app. El asistente abre un agente por módulo cuando una tarea lo necesita.</div>
+      </div>
+    </section>
+
+    <!-- ════════════ TERMINAL ════════════ -->
+    <section class="pane" id="pane-terminal">
+      <div class="term-layout">
+        <aside class="side">
+          <div class="acts"><button class="btn" onclick="Term.newSession()">+ Nueva sesión</button></div>
+          <div class="sess" id="sessList"></div>
+        </aside>
+        <div class="term-main">
+          <div class="term-bar"><span class="dot off" id="dot"></span><span id="status">Sin conectar</span><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="Term.openCopyText()">📋 Copiar texto</button><span style="flex:1"></span><span id="copyHint" style="font-size:11.5px;color:#7da0d8;opacity:.5;transition:opacity .2s">📋 Copiar texto, o Shift+arrastrar + botón derecho</span><span id="termTitle"></span></div>
+          <div id="term"></div>
+          <div class="empty" id="empty">Crea o selecciona una sesión para empezar.</div>
+          <!-- Barra táctil (solo móvil): desplazar el historial y mover la selección de opciones -->
+          <div class="touchbar" id="touchbar">
+            <span class="tb-lbl">Texto</span>
+            <button class="tb-btn" data-act="pageup"   title="Ver texto de más arriba">⬆</button>
+            <button class="tb-btn" data-act="pagedown" title="Ver texto de más abajo">⬇</button>
+            <button class="tb-btn" data-act="bottom"   title="Ir al final (texto en vivo)">⤓<small>final</small></button>
+            <span class="tb-sep"></span>
+            <span class="tb-lbl">Opción</span>
+            <button class="tb-btn" data-act="up"    title="Subir la selección">↑</button>
+            <button class="tb-btn" data-act="down"  title="Bajar la selección">↓</button>
+            <button class="tb-btn tb-ok" data-act="enter" title="Elegir / confirmar">✓<small>elegir</small></button>
+            <button class="tb-btn" data-act="tab"   title="Tab — aceptar la opción por defecto">⇥<small>tab</small></button>
+            <button class="tb-btn" data-act="esc"   title="Escape / cancelar">esc</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- Cuadro para copiar texto del terminal con selección/copiado NATIVOS del navegador -->
+<div class="copy-ov" id="copyOv">
+  <div class="copy-box">
+    <div class="cbh">
+      <b>Copiar texto del terminal</b>
+      <span style="color:#7da0d8;font-size:12px">Selecciona con el ratón y copia (botón derecho → Copiar, o Ctrl+C). Todo el texto ya viene seleccionado.</span>
+      <span style="flex:1"></span>
+      <button class="btn" style="padding:5px 12px;font-size:12px" onclick="Term.copyAllText()">Copiar todo</button>
+      <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="Term.closeCopyText()">Cerrar ✕</button>
+    </div>
+    <textarea id="copyArea" spellcheck="false" readonly></textarea>
+  </div>
+</div>
+
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const $ = id => document.getElementById(id);
+
+/* ════════════ Pestañas ════════════ */
+const Tabs = {
+  show(name){
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+    if (name === 'tareas')  Tasks.loadList();
+    if (name === 'modulos') Modules.load();
+    if (name === 'terminal') Term.activate();
+  }
+};
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => Tabs.show(t.dataset.tab)));
+
+/* ════════════ Módulos ════════════ */
+const Modules = {
+  async load(){
+    try {
+      const r = await fetch('/api/modules'); const { modules } = await r.json();
+      $('modRows').innerHTML = (modules || []).map(m => `
+        <tr style="cursor:default">
+          <td><b style="color:#fff">${esc(m.label || m.name)}</b></td>
+          <td>${m.has_spec ? '<span class="pill">SPEC.md</span>' : '<span class="muted">— sin contrato —</span>'}</td>
+          <td class="muted" style="font-family:monospace;font-size:12px">${esc(m.path)}</td>
+          <td>${m.active ? '<span class="badge st-hecho">activo</span>' : '<span class="badge st-pendiente">retirado</span>'}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="muted">Sin módulos.</td></tr>';
+    } catch(e){ $('modRows').innerHTML = '<tr><td colspan="4" class="muted">Error al cargar.</td></tr>'; }
+  }
+};
+
+/* ════════════ Tareas ════════════ */
+const Tasks = {
+  statuses: [], statusByKey: {}, current: null,
+  fmt(ts){ try { return new Date(ts).toLocaleString('es-ES', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}); } catch(e){ return ''; } },
+  label(k){ return (this.statusByKey[k] && this.statusByKey[k].label) || k; },
+
+  async loadList(){
+    Tasks.showList();
+    try {
+      const r = await fetch('/api/tasks'); const d = await r.json();
+      Tasks.statuses = d.statuses || []; Tasks.statusByKey = Object.fromEntries(Tasks.statuses.map(s => [s.key, s]));
+      const rows = (d.tasks || []).map(t => `
+        <tr onclick="Tasks.open(${t.id})">
+          <td><b style="color:#fff">${esc(t.title)}</b></td>
+          <td><span class="badge st-${t.status}">${esc(Tasks.label(t.status))}</span></td>
+          <td>${t.commit_count > 0 ? '<span class="pill">'+t.commit_count+'</span>' : '<span class="muted">—</span>'}</td>
+          <td class="muted">${Tasks.fmt(t.updated_at)}</td>
+        </tr>`).join('');
+      $('taskRows').innerHTML = rows || '<tr><td colspan="4" class="muted">No hay tareas todavía. Crea la primera.</td></tr>';
+    } catch(e){ $('taskRows').innerHTML = '<tr><td colspan="4" class="muted">Error al cargar.</td></tr>'; }
+  },
+
+  showList(){ AgentLogs.reset(); Tasks.current = null; $('taskList').style.display = ''; $('taskDetail').style.display = 'none'; },
+  showDetail(){ $('taskList').style.display = 'none'; $('taskDetail').style.display = 'flex'; },
+
+  async create(){
+    const title = prompt('¿Qué quieres hacer? (un título breve para la tarea)');
+    if (!title || !title.trim()) return;
+    const r = await fetch('/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title: title.trim() }) });
+    const d = await r.json();
+    if (d.id) Tasks.open(d.id); else alert(d.error || 'No se pudo crear');
+  },
+
+  async open(id){
+    if (Tasks.current !== id){ AgentLogs.reset(); $('dtAgents').dataset.sig = ''; }
+    Tasks.current = id; Tasks.showDetail();
+    const r = await fetch('/api/tasks/' + id);
+    if (!r.ok) { alert('No se pudo abrir la tarea'); Tasks.showList(); return; }
+    const d = await r.json();
+    Tasks.render(d);
+  },
+
+  render(d){
+    if (d.statuses){ Tasks.statuses = d.statuses; Tasks.statusByKey = Object.fromEntries(d.statuses.map(s => [s.key, s])); }
+    const t = d.task;
+    $('dtTitle').textContent = t.title;
+    $('dtBadge').className = 'badge st-' + t.status;
+    $('dtBadge').textContent = Tasks.label(t.status);
+    // stepper
+    const cur = Tasks.statusByKey[t.status] ? Tasks.statusByKey[t.status].step : 0;
+    $('dtStepper').innerHTML = Tasks.statuses.filter(s => s.key !== 'pendiente').map(s =>
+      `<span class="step ${s.step < cur ? 'done' : (s.step === cur ? 'now' : '')}">${esc(s.label)}</span>`).join('');
+    // definición
+    if (t.definition && t.definition.trim()){ $('defText').textContent = t.definition; $('defText').className = ''; }
+    else { $('defText').textContent = 'Aún sin definir. Escribe abajo lo que necesitas y el asistente resumirá aquí el objetivo de la tarea.'; $('defText').className = 'muted'; }
+    // botón "Empezar a desarrollar": solo con definición y antes de arrancar
+    const canStart = t.definition && t.definition.trim() && (t.status === 'pendiente' || t.status === 'definicion');
+    $('btnStart').style.display = canStart ? '' : 'none';
+    // botones de trabajo en marcha (no terminado)
+    const working = ['realizacion','tests_auto','ejecucion_tests','aceptacion'].includes(t.status);
+    $('btnTest').style.display   = working ? '' : 'none';
+    $('btnAccept').style.display = working ? '' : 'none';
+    Tasks._agentsCache = d.agents || [];   // para avisar en accept si hay tests en rojo
+    // chat
+    Tasks.renderChat(d.messages || []);
+    // agentes (columnas)
+    Tasks.renderAgents(d.agents || []);
+    // commits ligados a la tarea
+    Tasks.renderCommits(d.commits || []);
+  },
+
+  renderCommits(commits){
+    const card = $('dtCommitsCard');
+    if (!commits.length){ card.style.display = 'none'; return; }
+    card.style.display = '';
+    $('dtCommits').innerHTML = commits.map(c => `
+      <div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #14203a">
+        <span class="pill" style="font-family:monospace">${esc((c.sha||'').slice(0,8))}</span>
+        <span style="flex:1">${esc(c.message || '')}</span>
+        <span class="muted" style="font-size:12px">${Tasks.fmt(c.created_at)}</span>
+      </div>`).join('');
+  },
+
+  async test(){
+    if (!Tasks.current) return;
+    const b = $('btnTest'); b.disabled = true; const old = b.textContent; b.textContent = 'Probando…';
+    try {
+      const r = await fetch('/api/tasks/' + Tasks.current + '/test', { method:'POST' });
+      const d = await r.json();
+      if (!r.ok){ alert(d.error || 'No se pudieron ejecutar los tests'); return; }
+      if (Tasks.current) Tasks.render(d);
+    } catch(e){ alert('Error de conexión'); }
+    finally { b.disabled = false; b.textContent = old; }
+  },
+
+  async accept(){
+    if (!Tasks.current) return;
+    const failed = (Tasks._agentsCache || []).filter(a => a.test_status === 'failed').map(a => a.module_name);
+    const warn = failed.length ? ('⚠️ Hay tests en rojo (' + failed.join(', ') + ').\n\n') : '';
+    if (!confirm(warn + '¿Guardar (commit) los cambios de los módulos de esta tarea?')) return;
+    const b = $('btnAccept'); b.disabled = true; const old = b.textContent; b.textContent = 'Guardando…';
+    try {
+      const r = await fetch('/api/tasks/' + Tasks.current + '/accept', { method:'POST' });
+      const d = await r.json();
+      if (!r.ok){ alert(d.error || 'No se pudo guardar'); return; }
+      if (Tasks.current) Tasks.render(d);
+    } catch(e){ alert('Error de conexión'); }
+    finally { b.disabled = false; b.textContent = old; }
+  },
+
+  async start(){
+    if (!Tasks.current) return;
+    const b = $('btnStart'); b.disabled = true; const old = b.textContent; b.textContent = 'Planificando…';
+    try {
+      const r = await fetch('/api/tasks/' + Tasks.current + '/start', { method:'POST' });
+      const d = await r.json();
+      if (!r.ok){ alert(d.error || 'No se pudo empezar'); return; }
+      if (Tasks.current) Tasks.render(d);
+    } catch(e){ alert('Error de conexión'); }
+    finally { b.disabled = false; b.textContent = old; }
+  },
+
+  renderChat(msgs){
+    const box = $('dtChat');
+    if (!msgs.length){ box.innerHTML = '<div class="muted" style="text-align:center;padding:20px 0">Empieza la conversación contando qué necesitas.</div>'; return; }
+    box.innerHTML = msgs.map(m => `<div class="bub ${m.role === 'user' ? 'user' : 'assistant'}">${esc(m.content)}</div>`).join('');
+    box.scrollTop = box.scrollHeight;
+  },
+
+  renderAgents(agents){
+    const box = $('dtAgents');
+    const mods = agents.filter(a => a.kind === 'modulo');
+    // firma para no reconstruir (y re-enganchar el WS) en cada render si no cambió
+    const sig = Tasks.current + '|' + mods.map(a => a.id + ':' + a.status + ':' + (a.tmux_name || '') + ':' + (a.test_status || '')).join(',');
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    AgentLogs.reset();
+    // Columna del Estratega (siempre) + una por módulo (log en vivo).
+    let html = `<div class="agent strat">
+      <div class="ah"><span class="dot-s ${mods.length ? 'exited' : ''}"></span>Estratega
+        <span style="flex:1"></span><span class="tag">Estratega</span></div>
+      <div class="alog muted">${mods.length
+        ? 'Plan repartido a ' + mods.length + ' módulo(s). Cada uno trabaja en su columna.'
+        : 'El Estratega traduce lo que pides a un plan técnico y reparte el trabajo a los módulos.'}</div>
+    </div>`;
+    const tb = { passed:'✅ tests', failed:'❌ tests', running:'⏳ tests', none:'' };
+    html += mods.map(a => `<div class="agent" data-agent="${a.id}">
+      <div class="ah"><span class="dot-s ${a.status || ''}" id="agdot-${a.id}"></span>${esc(a.title || a.module_name)}
+        <span class="tag">${esc(a.module_name || '')}</span><span style="flex:1"></span>
+        ${a.test_status && a.test_status !== 'none' ? '<span class="tag" style="background:'+(a.test_status==='passed'?'#14432a':a.test_status==='failed'?'#5a1a1a':'#3a2f5f')+'">'+tb[a.test_status]+'</span>' : ''}
+        <span class="tag">Módulo</span></div>
+      <div class="alog" id="agterm-${a.id}" style="padding:2px"></div>
+    </div>`).join('');
+    box.innerHTML = html;
+    AgentLogs.build(mods);
+  },
+
+  async send(){
+    const ta = $('dtInput'); const content = ta.value.trim();
+    if (!content || Tasks.sending || !Tasks.current) return;
+    const id = Tasks.current;
+    Tasks.sending = true; $('dtSend').disabled = true;
+    ta.value = ''; ta.style.height = 'auto';
+    // pinta el mensaje del usuario + "pensando…" de inmediato
+    const box = $('dtChat');
+    if (box.querySelector('.muted')) box.innerHTML = '';
+    box.insertAdjacentHTML('beforeend', `<div class="bub user">${esc(content)}</div>`);
+    box.insertAdjacentHTML('beforeend', `<div class="bub assistant" id="thinking"><span class="muted">El asistente está pensando…</span></div>`);
+    box.scrollTop = box.scrollHeight;
+    try {
+      const r = await fetch('/api/tasks/' + id + '/messages', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content }) });
+      const d = await r.json();
+      if (!r.ok) { const th = $('thinking'); if (th) th.innerHTML = '<span class="muted">' + esc(d.error || 'No se pudo enviar') + '</span>'; return; }
+      if (id === Tasks.current) Tasks.render(d);
+    } catch(e){
+      const th = $('thinking'); if (th) th.innerHTML = '<span class="muted">Error de conexión. Inténtalo de nuevo.</span>';
+    } finally {
+      Tasks.sending = false; $('dtSend').disabled = false;
+    }
+  }
+};
+/* ════════════ Logs en vivo de los agentes (un xterm por columna) ════════════ */
+const AgentLogs = {
+  ws:null, cols:new Map(), byTmux:new Map(), _retry:null,
+  reset(){
+    if (this._retry){ clearTimeout(this._retry); this._retry = null; }
+    this.cols.forEach(c => { try { c.term.dispose(); } catch(e){} });
+    this.cols.clear(); this.byTmux.clear();
+    if (this.ws){ try { this.ws.onclose = null; this.ws.close(); } catch(e){} this.ws = null; }
+  },
+  build(mods){
+    mods.forEach(a => {
+      const el = document.getElementById('agterm-' + a.id);
+      if (!el || !a.tmux_name) return;
+      const term = new Terminal({ cursorBlink:false, fontSize:11, fontFamily:'Consolas,Menlo,monospace',
+        scrollback:3000, theme:{ background:'#0b1120', foreground:'#9fb2d8' } });
+      const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+      term.open(el); try { fit.fit(); } catch(e){}
+      term.onData(d => this.send({ type:'input', sessionId:a.tmux_name, data:d }));
+      const col = { term, fit, tmux:a.tmux_name, agentId:a.id };
+      this.cols.set(a.id, col); this.byTmux.set(a.tmux_name, col);
+    });
+    if (this.cols.size) this.connect();
+  },
+  connect(){
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    this.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
+    // onopen re-engancha TODAS las columnas (agent_attach): vale tanto para la
+    // primera conexión como para una reconexión — los tmux ag_<id> siguen vivos.
+    this.ws.onopen = () => this.cols.forEach((c, id) => this.send({ type:'agent_attach', agentId:id, cols:c.term.cols, rows:c.term.rows }));
+    this.ws.onmessage = ev => { let m; try { m = JSON.parse(ev.data); } catch(e){ return; } this.handle(m); };
+    // Reconexión transparente igual que el terminal: si la caída no fue deliberada
+    // (reset() anula este onclose) y aún hay columnas que mostrar, reintenta.
+    this.ws.onclose = () => { if (this.cols.size){ this._retry = setTimeout(() => this.connect(), 1500); } };
+    this.ws.onerror = () => {};
+  },
+  send(o){ if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); },
+  handle(m){
+    if (m.type === 'output'){ const c = this.byTmux.get(m.sessionId); if (c) c.term.write(m.data); }
+    else if (m.type === 'exit' || m.type === 'detached'){
+      const c = this.byTmux.get(m.sessionId); if (c){ const dot = document.getElementById('agdot-' + c.agentId); if (dot) dot.className = 'dot-s exited'; }
+    }
+  }
+};
+
+$('btnNewTask').addEventListener('click', () => Tasks.create());
+$('btnBack').addEventListener('click', () => Tasks.showList());
+$('btnStart').addEventListener('click', () => Tasks.start());
+$('btnTest').addEventListener('click', () => Tasks.test());
+$('btnAccept').addEventListener('click', () => Tasks.accept());
+$('dtSend').addEventListener('click', () => Tasks.send());
+$('dtInput').addEventListener('input', e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; });
+$('dtInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); Tasks.send(); } });
+$('copyOv').addEventListener('click', e => { if (e.target.id === 'copyOv') Term.closeCopyText(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('copyOv').classList.contains('on')) Term.closeCopyText(); });
+
+/* ════════════ Terminal (motor tmux existente) ════════════ */
+const Term = {
+  ws:null, term:null, fit:null, current:null, sessions:[], inited:false, started:false,
+  setStatus(txt, on){ $('status').textContent = txt; $('dot').className = 'dot' + (on?'':' off'); },
+  activate(){ if (!Term.inited){ Term.init(); Term.connect(); Term.inited = true; } else { Term.doFit(); } },
+  init(){
+    Term.term = new Terminal({ cursorBlink:true, fontSize:13, fontFamily:'Consolas,Menlo,monospace',
+      scrollback:5000, theme:{ background:'#0b0f17', foreground:'#d6e0f0' } });
+    Term.fit = new FitAddon.FitAddon(); Term.term.loadAddon(Term.fit);
+    Term.term.open($('term')); Term.doFit();
+    Term.term.onData(d => { if (Term.current) Term.send({ type:'input', sessionId:Term.current, data:d }); });
+    window.addEventListener('resize', () => { if ($('pane-terminal').classList.contains('active')) Term.doFit(); });
+
+    // ── Copiar/pegar (Windows) ──────────────────────────────────────────────
+    // claude/tmux activan el "modo ratón": para seleccionar con el ratón mantén
+    // SHIFT y arrastra (xterm fuerza la selección local). Para copiar la selección:
+    // botón derecho, o Ctrl+C (cuando hay algo seleccionado), o Ctrl+Shift+C.
+    // Pegar: Ctrl+Shift+V o Shift+botón derecho.
+    Term.copyText = (text) => {
+      if (!text) return Promise.resolve(false);
+      if (navigator.clipboard && navigator.clipboard.writeText)
+        return navigator.clipboard.writeText(text).then(() => true).catch(() => Term._execCopy(text));
+      return Promise.resolve(Term._execCopy(text));
+    };
+    Term._execCopy = (text) => {            // fallback sin Clipboard API (más tolerante)
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        const ok = document.execCommand('copy'); document.body.removeChild(ta);
+        return ok;
+      } catch (e) { return false; }
+    };
+    // Guardamos la ÚLTIMA selección no vacía: el clic derecho a veces borra la
+    // selección antes de que la leamos, así que copiamos la guardada.
+    Term._lastSel = '';
+    Term.term.onSelectionChange(() => {
+      const s = Term.term.getSelection();
+      if (s && s.length){ Term._lastSel = s; const el = $('copyHint'); if (el){ el.textContent = s.length + ' seleccionado — botón derecho o Ctrl+C copia'; el.style.opacity = '1'; } }
+    });
+    Term.copy = () => {
+      let sel = Term.term.getSelection(); if (!sel || !sel.length) sel = Term._lastSel;
+      if (!sel || !sel.length){ Term.flash('Nada seleccionado (mantén Shift y arrastra)'); return false; }
+      Term.copyText(sel).then(ok => Term.flash(ok ? 'Copiado ✓ (' + sel.length + ')' : 'No se pudo copiar'));
+      return true;
+    };
+    Term.paste = () => {
+      if (navigator.clipboard && navigator.clipboard.readText)
+        navigator.clipboard.readText().then(t => { if (t && Term.current) Term.send({ type:'input', sessionId:Term.current, data:t }); }).catch(()=>{});
+    };
+    // Botón derecho = copiar (selección actual o la última guardada).
+    $('term').addEventListener('contextmenu', (e) => { e.preventDefault(); Term.copy(); });
+    Term.term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || !e.ctrlKey) return true;
+      const k = e.key.toLowerCase();
+      // Ctrl+C: si hay selección copia (y NO manda interrumpir); si no, pasa (SIGINT).
+      if (k === 'c' && !e.shiftKey){ if (Term.term.getSelection() || Term._lastSel){ Term.copy(); e.preventDefault(); return false; } return true; }
+      if (!e.shiftKey) return true;
+      if (k === 'c'){ Term.copy(); e.preventDefault(); return false; }   // Ctrl+Shift+C
+      if (k === 'v'){ Term.paste(); e.preventDefault(); return false; }  // Ctrl+Shift+V
+      return true;
+    });
+  },
+  flash(txt){ const el = $('copyHint'); if(!el) return; el.textContent = txt; el.style.opacity = '1'; clearTimeout(Term._ft); Term._ft = setTimeout(() => { el.style.opacity = '.5'; el.textContent = '📋 Copiar texto, o Shift+arrastrar + botón derecho'; }, 1600); },
+  // Vuelca todo el texto del terminal (incl. scrollback) como texto plano.
+  dumpText(){
+    try { const buf = Term.term.buffer.active; const out = [];
+      for (let i = 0; i < buf.length; i++){ const ln = buf.getLine(i); out.push(ln ? ln.translateToString(true) : ''); }
+      return out.join('\n').replace(/\s+$/, '');
+    } catch(e){ return ''; }
+  },
+  openCopyText(){
+    if (!Term.term){ alert('Abre o selecciona una sesión primero.'); return; }
+    const ta = $('copyArea'); ta.value = Term.dumpText() || '(terminal vacío)';
+    $('copyOv').classList.add('on');
+    setTimeout(() => { ta.focus(); ta.select(); }, 30);
+  },
+  closeCopyText(){ $('copyOv').classList.remove('on'); if (Term.term) Term.term.focus(); },
+  copyAllText(){
+    const ta = $('copyArea'); ta.focus(); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch(e){}
+    if (!ok && navigator.clipboard) { navigator.clipboard.writeText(ta.value).catch(()=>{}); ok = true; }
+    Term.flash(ok ? 'Copiado ✓' : 'No se pudo copiar');
+  },
+  doFit(){ if(!Term.fit) return; try{ Term.fit.fit(); if(Term.current) Term.send({type:'resize',sessionId:Term.current,cols:Term.term.cols,rows:Term.term.rows}); }catch(e){} },
+  connect(){
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    Term.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
+    Term.ws.onopen = () => {
+      Term.setStatus('Conectado', true);
+      Term.send({ type:'list' });
+      // Re-enganche tras una reconexión (suspensión del equipo, salto de red, timeout
+      // del proxy o reinicio del proceso assistant): el tmux con `claude` sigue vivo,
+      // solo hay que volver a tender el puente a la sesión activa. Sin esto el terminal
+      // quedaba congelado y obligaba a refrescar la página y reabrir la sesión a mano.
+      if (Term.current != null) Term.send({ type:'attach', sessionId:Term.current, cols:Term.term.cols, rows:Term.term.rows });
+    };
+    Term.ws.onclose = () => { Term.setStatus('Desconectado — reintentando…', false); setTimeout(Term.connect, 1500); };
+    Term.ws.onerror = () => Term.setStatus('Error de conexión', false);
+    Term.ws.onmessage = ev => { let m; try{ m=JSON.parse(ev.data); }catch(e){ return; } Term.handle(m); };
+  },
+  send(o){ if(Term.ws && Term.ws.readyState===1) Term.ws.send(JSON.stringify(o)); },
+  handle(m){
+    if(m.type==='sessions'){ Term.sessions=m.sessions||[]; Term.renderSessions(); }
+    else if(m.type==='created'||m.type==='attached'){ Term.current=m.sessionId; $('empty').style.display='none'; Term.term.clear(); Term.term.focus(); Term.doFit(); if(m.title)$('termTitle').textContent=m.title; Term.send({type:'list'}); }
+    else if(m.type==='output'){ if(m.sessionId===Term.current) Term.term.write(m.data); }
+    else if(m.type==='exit'){ if(m.sessionId===Term.current){ Term.setStatus('Sesión terminada', false); Term.current=null; $('termTitle').textContent=''; } Term.send({type:'list'}); }
+    else if(m.type==='detached'){ if(m.sessionId===Term.current) Term.setStatus('Enganchada en otra pestaña', false); }
+    else if(m.type==='renamed'){ if(m.sessionId===Term.current && m.title)$('termTitle').textContent=m.title; Term.send({type:'list'}); }
+    else if(m.type==='error'){ Term.setStatus(m.data||'Error', false); }
+  },
+  renderSessions(){
+    const el = $('sessList');
+    if(!Term.sessions.length){ el.innerHTML='<div style="padding:10px;color:#5b6b88;font-size:12.5px">Sin sesiones activas</div>'; return; }
+    el.innerHTML = Term.sessions.map(s =>
+      `<div class="it ${s.sessionId===Term.current?'active':''}" onclick="Term.attach(${s.sessionId})">
+         <span class="sname" id="sname_${s.sessionId}" ondblclick="Term.startRename(${s.sessionId},event)" title="Doble clic para renombrar">${esc(s.title||('Sesión #'+s.sessionId))}</span>
+         <span class="x" onclick="event.stopPropagation();Term.terminate(${s.sessionId})" title="Terminar">✕</span>
+       </div>`).join('');
+  },
+  startRename(id, ev){
+    if(ev) ev.stopPropagation();
+    const s = Term.sessions.find(x => x.sessionId === id); if(!s) return;
+    const span = $('sname_' + id); if(!span || span.querySelector('input')) return;
+    const cur = s.title || ('Sesión #' + id);
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.value = cur; inp.className = 'rename-in'; inp.maxLength = 255;
+    inp.onclick = e => e.stopPropagation();
+    span.textContent = ''; span.appendChild(inp);
+    inp.focus(); inp.select();
+    let done = false;
+    const commit = (save) => {
+      if(done) return; done = true;
+      const v = inp.value.trim();
+      if(save && v && v !== cur) Term.send({ type:'rename', sessionId:id, title:v });
+      else Term.renderSessions();
+    };
+    inp.onkeydown = e => {
+      if(e.key === 'Enter'){ e.preventDefault(); commit(true); }
+      else if(e.key === 'Escape'){ e.preventDefault(); commit(false); }
+    };
+    inp.onblur = () => commit(true);
+  },
+  newSession(){ const cols=Term.term?Term.term.cols:120, rows=Term.term?Term.term.rows:30; Term.send({ type:'create', cols, rows }); },
+  attach(id){ if(id===Term.current) return; Term.current=id; Term.term.clear(); Term.send({ type:'attach', sessionId:id, cols:Term.term.cols, rows:Term.term.rows }); },
+  terminate(id){ if(confirm('¿Terminar esta sesión de Claude?')) Term.send({ type:'terminate', sessionId:id }); }
+};
+
+/* ════════════ Barra táctil móvil ════════════ */
+/* Desplaza el historial (scroll) y envía flechas/Enter al terminal para elegir
+   opciones cuando Claude ofrece 1/2/3. Las teclas van por WebSocket directo al
+   PTY (no por el DOM), así no abrimos el teclado del móvil al navegar. */
+(function(){
+  const bar = $('touchbar'); if (!bar) return;
+  const sendSeq = seq => { if (Term.current) Term.send({ type:'input', sessionId:Term.current, data:seq }); };
+  // Respeta el "application cursor keys mode" (DECCKM): ESC O x vs ESC [ x.
+  const arrow = dir => { const app = Term.term && Term.term.modes && Term.term.modes.applicationCursorKeysMode; sendSeq((app ? '\x1bO' : '\x1b[') + dir); };
+  const page  = dir => { if (Term.term) Term.term.scrollLines(dir * Math.max(1, Term.term.rows - 2)); };
+  const acts = {
+    pageup:   () => page(-1),
+    pagedown: () => page(1),
+    bottom:   () => { if (Term.term) Term.term.scrollToBottom(); },
+    up:       () => arrow('A'),
+    down:     () => arrow('B'),
+    enter:    () => sendSeq('\r'),
+    tab:      () => sendSeq('\t'),
+    esc:      () => sendSeq('\x1b'),
+  };
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('button[data-act]'); if (!b) return;
+    const f = acts[b.dataset.act]; if (f){ e.preventDefault(); f(); }
+  });
+})();
+
+/* arranque: pestaña Tareas */
+Tasks.loadList();
+</script>
+</body>
+</html>
