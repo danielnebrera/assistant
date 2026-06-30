@@ -116,7 +116,12 @@ function openBridge(ws, sessionId, name, cols, rows) {
     ws._bridges.set(sessionId, bridge);
     proc.onData(d => { try { send(ws, { type: 'output', sessionId, data: d }); } catch {} });
     proc.onExit(async () => {
-        ws._bridges.delete(sessionId);
+        // Solo retiramos la entrada si sigue siendo ESTE bridge. Al cambiar de
+        // sesión y volver, openBridge mata el bridge viejo y crea uno nuevo de
+        // inmediato; el onExit del viejo llega después y, sin esta guarda,
+        // borraba el bridge nuevo del mapa → los 'input' se descartaban y había
+        // que refrescar la página para volver a escribir.
+        if (ws._bridges.get(sessionId) === bridge) ws._bridges.delete(sessionId);
         if (bridge.detaching) return;
         if (await tmuxExists(name)) send(ws, { type: 'detached', sessionId });
         else { store.update(sessionId, { status: 'exited' }); send(ws, { type: 'exit', sessionId, code: 0 }); }
@@ -126,7 +131,12 @@ function openBridge(ws, sessionId, name, cols, rows) {
 async function handleMessage(ws, msg) {
     const { type, sessionId, data, cols, rows } = msg;
 
-    if (type === 'list') {
+    if (type === 'ping') {
+        // Heartbeat a nivel de aplicación: el navegador no expone los ping/pong del
+        // protocolo, así que el cliente nos sondea para detectar sockets muertos.
+        send(ws, { type: 'pong' });
+
+    } else if (type === 'list') {
         const sessions = [];
         for (const r of store.listByUser(ws.userId, 'running')) {
             if (await tmuxExists('cc_' + r.id)) sessions.push({ sessionId: r.id, title: r.title || ('Sesión #' + r.id), status: 'running' });

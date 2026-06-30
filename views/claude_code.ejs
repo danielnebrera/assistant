@@ -274,7 +274,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 const Modules = {
   async load(){
     try {
-      const r = await fetch('/api/modules'); const { modules } = await r.json();
+      const r = await fetch('/assistant/api/modules'); const { modules } = await r.json();
       $('modRows').innerHTML = (modules || []).map(m => `
         <tr style="cursor:default">
           <td><b style="color:#fff">${esc(m.label || m.name)}</b></td>
@@ -295,7 +295,7 @@ const Tasks = {
   async loadList(){
     Tasks.showList();
     try {
-      const r = await fetch('/api/tasks'); const d = await r.json();
+      const r = await fetch('/assistant/api/tasks'); const d = await r.json();
       Tasks.statuses = d.statuses || []; Tasks.statusByKey = Object.fromEntries(Tasks.statuses.map(s => [s.key, s]));
       const rows = (d.tasks || []).map(t => `
         <tr onclick="Tasks.open(${t.id})">
@@ -314,7 +314,7 @@ const Tasks = {
   async create(){
     const title = prompt('¿Qué quieres hacer? (un título breve para la tarea)');
     if (!title || !title.trim()) return;
-    const r = await fetch('/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title: title.trim() }) });
+    const r = await fetch('/assistant/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title: title.trim() }) });
     const d = await r.json();
     if (d.id) Tasks.open(d.id); else alert(d.error || 'No se pudo crear');
   },
@@ -322,7 +322,7 @@ const Tasks = {
   async open(id){
     if (Tasks.current !== id){ AgentLogs.reset(); $('dtAgents').dataset.sig = ''; }
     Tasks.current = id; Tasks.showDetail();
-    const r = await fetch('/api/tasks/' + id);
+    const r = await fetch('/assistant/api/tasks/' + id);
     if (!r.ok) { alert('No se pudo abrir la tarea'); Tasks.showList(); return; }
     const d = await r.json();
     Tasks.render(d);
@@ -373,7 +373,7 @@ const Tasks = {
     if (!Tasks.current) return;
     const b = $('btnTest'); b.disabled = true; const old = b.textContent; b.textContent = 'Probando…';
     try {
-      const r = await fetch('/api/tasks/' + Tasks.current + '/test', { method:'POST' });
+      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/test', { method:'POST' });
       const d = await r.json();
       if (!r.ok){ alert(d.error || 'No se pudieron ejecutar los tests'); return; }
       if (Tasks.current) Tasks.render(d);
@@ -388,7 +388,7 @@ const Tasks = {
     if (!confirm(warn + '¿Guardar (commit) los cambios de los módulos de esta tarea?')) return;
     const b = $('btnAccept'); b.disabled = true; const old = b.textContent; b.textContent = 'Guardando…';
     try {
-      const r = await fetch('/api/tasks/' + Tasks.current + '/accept', { method:'POST' });
+      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/accept', { method:'POST' });
       const d = await r.json();
       if (!r.ok){ alert(d.error || 'No se pudo guardar'); return; }
       if (Tasks.current) Tasks.render(d);
@@ -400,7 +400,7 @@ const Tasks = {
     if (!Tasks.current) return;
     const b = $('btnStart'); b.disabled = true; const old = b.textContent; b.textContent = 'Planificando…';
     try {
-      const r = await fetch('/api/tasks/' + Tasks.current + '/start', { method:'POST' });
+      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/start', { method:'POST' });
       const d = await r.json();
       if (!r.ok){ alert(d.error || 'No se pudo empezar'); return; }
       if (Tasks.current) Tasks.render(d);
@@ -456,7 +456,7 @@ const Tasks = {
     box.insertAdjacentHTML('beforeend', `<div class="bub assistant" id="thinking"><span class="muted">El asistente está pensando…</span></div>`);
     box.scrollTop = box.scrollHeight;
     try {
-      const r = await fetch('/api/tasks/' + id + '/messages', {
+      const r = await fetch('/assistant/api/tasks/' + id + '/messages', {
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content }) });
       const d = await r.json();
       if (!r.ok) { const th = $('thinking'); if (th) th.innerHTML = '<span class="muted">' + esc(d.error || 'No se pudo enviar') + '</span>'; return; }
@@ -470,9 +470,10 @@ const Tasks = {
 };
 /* ════════════ Logs en vivo de los agentes (un xterm por columna) ════════════ */
 const AgentLogs = {
-  ws:null, cols:new Map(), byTmux:new Map(), _retry:null,
+  ws:null, cols:new Map(), byTmux:new Map(), _retry:null, _hb:null, _lastRx:0,
   reset(){
     if (this._retry){ clearTimeout(this._retry); this._retry = null; }
+    this._stopHB();
     this.cols.forEach(c => { try { c.term.dispose(); } catch(e){} });
     this.cols.clear(); this.byTmux.clear();
     if (this.ws){ try { this.ws.onclose = null; this.ws.close(); } catch(e){} this.ws = null; }
@@ -492,16 +493,31 @@ const AgentLogs = {
     if (this.cols.size) this.connect();
   },
   connect(){
+    if (this._retry){ clearTimeout(this._retry); this._retry = null; }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     this.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
     // onopen re-engancha TODAS las columnas (agent_attach): vale tanto para la
     // primera conexión como para una reconexión — los tmux ag_<id> siguen vivos.
-    this.ws.onopen = () => this.cols.forEach((c, id) => this.send({ type:'agent_attach', agentId:id, cols:c.term.cols, rows:c.term.rows }));
-    this.ws.onmessage = ev => { let m; try { m = JSON.parse(ev.data); } catch(e){ return; } this.handle(m); };
+    this.ws.onopen = () => { this._lastRx = Date.now(); this._startHB(); this.cols.forEach((c, id) => this.send({ type:'agent_attach', agentId:id, cols:c.term.cols, rows:c.term.rows })); };
+    this.ws.onmessage = ev => { this._lastRx = Date.now(); let m; try { m = JSON.parse(ev.data); } catch(e){ return; } if (m.type==='pong') return; this.handle(m); };
     // Reconexión transparente igual que el terminal: si la caída no fue deliberada
     // (reset() anula este onclose) y aún hay columnas que mostrar, reintenta.
-    this.ws.onclose = () => { if (this.cols.size){ this._retry = setTimeout(() => this.connect(), 1500); } };
+    this.ws.onclose = () => { this._stopHB(); if (this.cols.size){ this._retry = setTimeout(() => this.connect(), 1500); } };
     this.ws.onerror = () => {};
+  },
+  // Watchdog igual que Term: sonda cada 15s, fuerza cierre tras 40s sin recibir.
+  _startHB(){ this._stopHB(); this._hb = setInterval(() => this._tick(), 15000); },
+  _stopHB(){ if (this._hb){ clearInterval(this._hb); this._hb = null; } },
+  _tick(){
+    if (!this.ws || this.ws.readyState !== 1) return;
+    if (Date.now() - this._lastRx > 40000){ try { this.ws.close(); } catch(e){} return; }
+    this.send({ type:'ping' });
+  },
+  wake(){
+    if (!this.cols.size) return;
+    const rs = this.ws ? this.ws.readyState : 3;
+    if (rs === 1) this.send({ type:'ping' });
+    else if (rs !== 0) this.connect();
   },
   send(o){ if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); },
   handle(m){
@@ -523,9 +539,15 @@ $('dtInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shif
 $('copyOv').addEventListener('click', e => { if (e.target.id === 'copyOv') Term.closeCopyText(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('copyOv').classList.contains('on')) Term.closeCopyText(); });
 
+/* Reconexión inmediata al recuperar red o volver a la pestaña: no esperamos a que el
+   navegador descubra por su cuenta un socket medio-abierto (la causa de tener que
+   refrescar tras suspender el equipo o cambiar de wifi). */
+window.addEventListener('online', () => { Term.wake(); AgentLogs.wake(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden){ Term.wake(); AgentLogs.wake(); } });
+
 /* ════════════ Terminal (motor tmux existente) ════════════ */
 const Term = {
-  ws:null, term:null, fit:null, current:null, sessions:[], inited:false, started:false,
+  ws:null, term:null, fit:null, current:null, sessions:[], inited:false, started:false, _hb:null, _lastRx:0, _retry:null,
   setStatus(txt, on){ $('status').textContent = txt; $('dot').className = 'dot' + (on?'':' off'); },
   activate(){ if (!Term.inited){ Term.init(); Term.connect(); Term.inited = true; } else { Term.doFit(); } },
   init(){
@@ -609,10 +631,12 @@ const Term = {
   },
   doFit(){ if(!Term.fit) return; try{ Term.fit.fit(); if(Term.current) Term.send({type:'resize',sessionId:Term.current,cols:Term.term.cols,rows:Term.term.rows}); }catch(e){} },
   connect(){
+    if (Term._retry){ clearTimeout(Term._retry); Term._retry = null; }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     Term.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
     Term.ws.onopen = () => {
       Term.setStatus('Conectado', true);
+      Term._lastRx = Date.now(); Term._startHB();
       Term.send({ type:'list' });
       // Re-enganche tras una reconexión (suspensión del equipo, salto de red, timeout
       // del proxy o reinicio del proceso assistant): el tmux con `claude` sigue vivo,
@@ -620,9 +644,28 @@ const Term = {
       // quedaba congelado y obligaba a refrescar la página y reabrir la sesión a mano.
       if (Term.current != null) Term.send({ type:'attach', sessionId:Term.current, cols:Term.term.cols, rows:Term.term.rows });
     };
-    Term.ws.onclose = () => { Term.setStatus('Desconectado — reintentando…', false); setTimeout(Term.connect, 1500); };
+    Term.ws.onclose = () => { Term._stopHB(); Term.setStatus('Desconectado — reintentando…', false); Term._retry = setTimeout(Term.connect, 1500); };
     Term.ws.onerror = () => Term.setStatus('Error de conexión', false);
-    Term.ws.onmessage = ev => { let m; try{ m=JSON.parse(ev.data); }catch(e){ return; } Term.handle(m); };
+    Term.ws.onmessage = ev => { Term._lastRx = Date.now(); let m; try{ m=JSON.parse(ev.data); }catch(e){ return; } if(m.type==='pong') return; Term.handle(m); };
+  },
+  // Watchdog de conexión viva: la API WebSocket del navegador no manda pings propios
+  // ni avisa de los del servidor, así que un socket medio-abierto se queda en OPEN
+  // para siempre y onclose nunca dispara. Sondeamos cada 15s y, si pasan 40s sin
+  // recibir nada, forzamos el cierre para que la reconexión de onclose actúe.
+  _startHB(){ Term._stopHB(); Term._hb = setInterval(Term._tick, 15000); },
+  _stopHB(){ if (Term._hb){ clearInterval(Term._hb); Term._hb = null; } },
+  _tick(){
+    if (!Term.ws || Term.ws.readyState !== 1) return;
+    if (Date.now() - Term._lastRx > 40000){ try { Term.ws.close(); } catch(e){} return; }
+    Term.send({ type:'ping' });
+  },
+  // Al recuperar red o volver a la pestaña: si el socket no está vivo, reconecta ya;
+  // si dice estar OPEN, sondea para descartar que sea un zombi.
+  wake(){
+    if (!Term.inited) return;
+    const rs = Term.ws ? Term.ws.readyState : 3;
+    if (rs === 1) Term.send({ type:'ping' });
+    else if (rs !== 0) Term.connect();
   },
   send(o){ if(Term.ws && Term.ws.readyState===1) Term.ws.send(JSON.stringify(o)); },
   handle(m){
