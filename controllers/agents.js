@@ -285,6 +285,132 @@ async function runTests(taskId) {
     return { results, allPass: results.every(x => x.status === 'passed') };
 }
 
+/* ── Control de agentes en vivo (parar / matar / interactuar) ──────────────── */
+// Mensaje de parada suave: pide al agente que se detenga sin matar su sesión, así
+// conserva su contexto y se le puede corregir o relanzar la instrucción.
+const STOP_MESSAGE = 'Detente: no hagas más cambios y no sigas con la tarea. Resume en 3 líneas lo que llevas hecho y espera nuevas instrucciones.';
+
+// Carga un agente de MÓDULO de una tarea (con su tmux). null si no es de la tarea.
+async function agentOfTask(taskId, agentId) {
+    const rows = await db.query(
+        `SELECT id, tmux_name, status FROM ${db.t('assistant_agent')}
+          WHERE id=? AND task_id=? AND kind='modulo'`, [agentId, taskId]);
+    return rows[0] || null;
+}
+
+// Envía una instrucción (un turno de usuario) al agente vivo y la confirma con Enter.
+async function sendToAgent(taskId, agentId, text) {
+    const a = await agentOfTask(taskId, agentId);
+    if (!a) throw new Error('Agente no encontrado');
+    if (!a.tmux_name || !(await tmux.exists(a.tmux_name))) throw new Error('El agente ya no está activo');
+    const clean = String(text || '').replace(/[\r\n]+/g, ' ').trim();
+    if (!clean) throw new Error('Mensaje vacío');
+    await tmux.sendKeys(a.tmux_name, clean);
+    await sleep(150);
+    await tmux.sendEnter(a.tmux_name);
+    return { ok: true };
+}
+
+// Parada SUAVE: Esc (corta la acción en curso) + mensaje de "detente". Conserva la
+// sesión tmux del agente (no pierde su contexto).
+async function softStopAgent(taskId, agentId) {
+    const a = await agentOfTask(taskId, agentId);
+    if (!a) throw new Error('Agente no encontrado');
+    if (!a.tmux_name || !(await tmux.exists(a.tmux_name))) return { ok: false, alive: false };
+    await tmux.interrupt(a.tmux_name);
+    await sleep(400);
+    await tmux.sendKeys(a.tmux_name, STOP_MESSAGE);
+    await sleep(150);
+    await tmux.sendEnter(a.tmux_name);
+    return { ok: true, alive: true };
+}
+
+// HARD KILL: mata la sesión tmux del agente (red de seguridad: garantizado, pero
+// se pierde su contexto/conversación; relanzarlo sería desde cero).
+async function hardKillAgent(taskId, agentId) {
+    const a = await agentOfTask(taskId, agentId);
+    if (!a) throw new Error('Agente no encontrado');
+    if (a.tmux_name) await tmux.kill(a.tmux_name);
+    await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]);
+    return { ok: true };
+}
+
+// Parada SUAVE de TODOS los agentes vivos de la tarea (botón de emergencia).
+async function softStopAll(taskId) {
+    const rows = await db.query(
+        `SELECT id FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo' AND status='running'`, [taskId]);
+    let stopped = 0;
+    for (const r of rows) { try { if ((await softStopAgent(taskId, r.id)).ok) stopped++; } catch (e) {} }
+    return { ok: true, stopped };
+}
+
+// Estado de los agentes de módulo de una tarea, con la COLA del log en vivo de
+// cada uno (para que el Estratega supervise). Solo captura el pane de los vivos.
+async function agentStates(taskId, tailLines = 30) {
+    const rows = await db.query(
+        `SELECT a.id, a.status, a.tmux_name, m.name AS module
+           FROM ${db.t('assistant_agent')} a
+           LEFT JOIN ${db.t('assistant_module')} m ON m.id = a.module_id
+          WHERE a.task_id=? AND a.kind='modulo' ORDER BY a.position ASC, a.id ASC`, [taskId]);
+    const out = [];
+    for (const r of rows) {
+        let tail = '';
+        if (r.tmux_name && r.status === 'running' && await tmux.exists(r.tmux_name)) {
+            const pane = await tmux.capture(r.tmux_name);
+            tail = (pane || '').split('\n').map(l => l.replace(/\s+$/, '')).filter(Boolean).slice(-tailLines).join('\n');
+        }
+        out.push({ agentId: r.id, module: r.module, status: r.status, tail });
+    }
+    return out;
+}
+
+// El agente (de módulo) de una tarea por nombre de módulo. null si no existe.
+async function agentByModule(taskId, moduleName) {
+    const rows = await db.query(
+        `SELECT a.id, a.tmux_name, a.status FROM ${db.t('assistant_agent')} a
+           LEFT JOIN ${db.t('assistant_module')} m ON m.id = a.module_id
+          WHERE a.task_id=? AND a.kind='modulo' AND m.name=? ORDER BY a.id DESC LIMIT 1`,
+        [taskId, moduleName]);
+    return rows[0] || null;
+}
+
+// Ejecuta las ACCIONES que decide el Estratega (lanzar / enviar / parar /
+// parar_todos). El Estratega solo DECIDE (texto→JSON); aquí, en código de
+// confianza, se EJECUTAN contra tmux. Devuelve un resumen por acción.
+async function executeActions(taskId, actions) {
+    const done = [];
+    if (!Array.isArray(actions)) return done;
+    for (const ac of actions) {
+        const op = ac && ac.op;
+        try {
+            if (op === 'lanzar') {
+                const ex = await db.query(`SELECT COUNT(*) AS n FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo'`, [taskId]);
+                if (ex[0].n > 0) { done.push({ op, skipped: 'ya hay agentes lanzados' }); continue; }
+                const r = await planAndLaunch(taskId);
+                done.push({ op, launched: (r.launched || []).length });
+            } else if (op === 'parar_todos') {
+                const r = await softStopAll(taskId);
+                done.push({ op, stopped: r.stopped });
+            } else if (op === 'probar') {
+                const r = await runTests(taskId);
+                done.push({ op, allPass: r.allPass });
+            } else if (op === 'guardar') {
+                const r = await commitTask(taskId);
+                done.push({ op, sha: (r.sha || '').slice(0, 8) });
+            } else if (op === 'parar' || op === 'hard_kill' || op === 'enviar') {
+                const a = await agentByModule(taskId, ac.module);
+                if (!a) { done.push({ op, module: ac.module, error: 'agente no encontrado' }); continue; }
+                if (op === 'parar') { await softStopAgent(taskId, a.id); done.push({ op, module: ac.module }); }
+                else if (op === 'hard_kill') { await hardKillAgent(taskId, a.id); done.push({ op, module: ac.module }); }
+                else { await sendToAgent(taskId, a.id, ac.text || ''); done.push({ op, module: ac.module }); }
+            } else {
+                done.push({ op: op || '(vacío)', error: 'acción desconocida' });
+            }
+        } catch (e) { done.push({ op, module: ac && ac.module, error: e.message }); }
+    }
+    return done;
+}
+
 // Ownership: ¿este agente pertenece a una tarea del usuario? (para el WS)
 async function ownedAgent(userId, agentId) {
     const rows = await db.query(
@@ -294,4 +420,6 @@ async function ownedAgent(userId, agentId) {
     return rows[0] || null;
 }
 
-module.exports = { planAndLaunch, syncStatuses, ownedAgent, commitTask, runTests, agentPrompt, WORK_DIR, PERM_MODE };
+module.exports = { planAndLaunch, syncStatuses, ownedAgent, commitTask, runTests, agentPrompt,
+    sendToAgent, softStopAgent, hardKillAgent, softStopAll,
+    agentStates, agentByModule, executeActions, WORK_DIR, PERM_MODE };

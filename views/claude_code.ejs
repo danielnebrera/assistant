@@ -55,6 +55,11 @@
     .card{background:#0e1626;border:1px solid #1a2640;border-radius:10px;overflow:hidden}
     .card>.ch{padding:9px 14px;font-size:12px;font-weight:700;color:#7da0d8;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #1a2640;background:#0c1322}
     .card>.cb{padding:14px}
+    /* Definición + Conversación en 2 columnas, cada una con scroll interno */
+    .dt-top{display:flex;gap:16px;align-items:stretch;height:42vh;min-height:260px;max-height:540px;flex-shrink:0}
+    .dt-top>.card{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+    .dt-def>.cb{flex:1;min-height:0;overflow:auto;white-space:pre-wrap}
+    .dt-conv>.chat{flex:1;min-height:0;max-height:none}
     /* definición */
     #defText{font-size:14px;line-height:1.6;color:#d6e0f0;white-space:pre-wrap}
     /* chat */
@@ -73,6 +78,7 @@
     .agent .alog{flex:1;padding:10px 12px;font-family:Consolas,Menlo,monospace;font-size:12px;color:#9fb2d8;white-space:pre-wrap;overflow:auto;min-height:0}
     .dot-s{width:8px;height:8px;border-radius:50%;background:#30363d;flex-shrink:0}
     .dot-s.running{background:#3fb950}.dot-s.exited{background:#f85149}
+    .btn:disabled{opacity:.4;cursor:default}
     /* ── Terminal ── */
     .term-layout{display:flex;height:100%;width:100%}
     .side{width:220px;background:#0e1422;border-right:1px solid #1d2740;display:flex;flex-direction:column;flex-shrink:0}
@@ -108,6 +114,10 @@
       .tab{padding:8px 11px;font-size:13px;white-space:nowrap}
       .wrap{padding:14px}
       .dt-bar,.stepper,.dt-body{padding-left:14px;padding-right:14px}
+      /* las 2 columnas (definición/conversación) se apilan en móvil */
+      .dt-top{flex-direction:column;height:auto;max-height:none}
+      .dt-def>.cb{max-height:240px}
+      .dt-conv>.chat{max-height:340px}
       .bub{max-width:90%}
       /* la barra lateral de sesiones pasa a ser una tira horizontal arriba */
       .term-layout{flex-direction:column}
@@ -168,24 +178,24 @@
         </div>
         <div class="stepper" id="dtStepper"></div>
         <div class="dt-body">
-          <div class="card">
-            <div class="ch">Definición de la tarea</div>
-            <div class="cb"><div id="defText" class="muted">Aún sin definir. Escribe abajo lo que necesitas y el asistente resumirá aquí el objetivo de la tarea.</div></div>
-          </div>
-          <div class="card" style="display:flex;flex-direction:column">
-            <div class="ch">Conversación</div>
-            <div class="chat" id="dtChat"></div>
-            <div class="chat-in">
-              <textarea id="dtInput" placeholder="Escribe aquí lo que quieres conseguir…" rows="1"></textarea>
-              <button class="btn" id="dtSend">Enviar</button>
+          <div class="dt-top">
+            <div class="card dt-def">
+              <div class="ch">Definición de la tarea</div>
+              <div class="cb"><div id="defText" class="muted">Aún sin definir. Escribe abajo lo que necesitas y el asistente resumirá aquí el objetivo de la tarea.</div></div>
+            </div>
+            <div class="card dt-conv">
+              <div class="ch">Conversación</div>
+              <div class="chat" id="dtChat"></div>
+              <div class="chat-in">
+                <textarea id="dtInput" placeholder="Escribe aquí lo que quieres conseguir…" rows="1"></textarea>
+                <button class="btn" id="dtSend">Enviar</button>
+              </div>
             </div>
           </div>
           <div class="card">
             <div class="ch" style="display:flex;align-items:center;gap:10px">Trabajo de los agentes
               <span style="flex:1"></span>
-              <button class="btn" id="btnStart" style="display:none;padding:5px 12px;font-size:12px">▶ Empezar a desarrollar</button>
-              <button class="btn ghost" id="btnTest" style="display:none;padding:5px 12px;font-size:12px">🧪 Ejecutar tests</button>
-              <button class="btn" id="btnAccept" style="display:none;padding:5px 12px;font-size:12px;background:#14803a">✓ Aceptar y guardar</button>
+              <span id="supInd" title="El Estratega revisa y coordina a los agentes automáticamente" style="display:none;font-size:12px;font-weight:600;color:#9fc3ff;text-transform:none;letter-spacing:0">🤖 Supervisión automática</span>
             </div>
             <div class="cb"><div class="agents" id="dtAgents"></div></div>
           </div>
@@ -217,7 +227,7 @@
           <div class="sess" id="sessList"></div>
         </aside>
         <div class="term-main">
-          <div class="term-bar"><span class="dot off" id="dot"></span><span id="status">Sin conectar</span><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="Term.openCopyText()">📋 Copiar texto</button><span style="flex:1"></span><span id="copyHint" style="font-size:11.5px;color:#7da0d8;opacity:.5;transition:opacity .2s">📋 Copiar texto, o Shift+arrastrar + botón derecho</span><span id="termTitle"></span></div>
+          <div class="term-bar"><span class="dot off" id="dot"></span><span id="status">Sin conectar</span><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="Term.openCopyText()">📋 Copiar texto</button><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="Term.openPaste()">📥 Pegar</button><span style="flex:1"></span><span id="copyHint" style="font-size:11.5px;color:#7da0d8;opacity:.5;transition:opacity .2s">📋 Copiar texto, o Shift+arrastrar + botón derecho</span><span id="termTitle"></span></div>
           <div id="term"></div>
           <div class="empty" id="empty">Crea o selecciona una sesión para empezar.</div>
           <!-- Barra táctil (solo móvil): desplazar el historial y mover la selección de opciones -->
@@ -226,6 +236,8 @@
             <button class="tb-btn" data-act="pageup"   title="Ver texto de más arriba">⬆</button>
             <button class="tb-btn" data-act="pagedown" title="Ver texto de más abajo">⬇</button>
             <button class="tb-btn" data-act="bottom"   title="Ir al final (texto en vivo)">⤓<small>final</small></button>
+            <span class="tb-sep"></span>
+            <button class="tb-btn" data-act="paste" title="Pegar texto del portapapeles">📥<small>pegar</small></button>
             <span class="tb-sep"></span>
             <span class="tb-lbl">Opción</span>
             <button class="tb-btn" data-act="up"    title="Subir la selección">↑</button>
@@ -251,6 +263,20 @@
       <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="Term.closeCopyText()">Cerrar ✕</button>
     </div>
     <textarea id="copyArea" spellcheck="false" readonly></textarea>
+  </div>
+</div>
+
+<!-- Cuadro para PEGAR texto en el terminal (pega aquí con el método nativo del dispositivo) -->
+<div class="copy-ov" id="pasteOv">
+  <div class="copy-box" style="height:min(60vh,460px)">
+    <div class="cbh">
+      <b>Pegar texto en el terminal</b>
+      <span style="color:#7da0d8;font-size:12px">Pega aquí (Ctrl+V en Windows, o mantén pulsado → Pegar en Android) y dale a «Enviar».</span>
+      <span style="flex:1"></span>
+      <button class="btn" style="padding:5px 12px;font-size:12px" onclick="Term.pasteSend()">Enviar al terminal ⏎</button>
+      <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="Term.closePaste()">Cerrar ✕</button>
+    </div>
+    <textarea id="pasteArea" spellcheck="false" placeholder="Pega aquí el texto…"></textarea>
   </div>
 </div>
 
@@ -308,7 +334,7 @@ const Tasks = {
     } catch(e){ $('taskRows').innerHTML = '<tr><td colspan="4" class="muted">Error al cargar.</td></tr>'; }
   },
 
-  showList(){ AgentLogs.reset(); Tasks.current = null; $('taskList').style.display = ''; $('taskDetail').style.display = 'none'; },
+  showList(){ Sup.stop(); AgentLogs.reset(); Tasks.current = null; $('taskList').style.display = ''; $('taskDetail').style.display = 'none'; },
   showDetail(){ $('taskList').style.display = 'none'; $('taskDetail').style.display = 'flex'; },
 
   async create(){
@@ -341,14 +367,12 @@ const Tasks = {
     // definición
     if (t.definition && t.definition.trim()){ $('defText').textContent = t.definition; $('defText').className = ''; }
     else { $('defText').textContent = 'Aún sin definir. Escribe abajo lo que necesitas y el asistente resumirá aquí el objetivo de la tarea.'; $('defText').className = 'muted'; }
-    // botón "Empezar a desarrollar": solo con definición y antes de arrancar
-    const canStart = t.definition && t.definition.trim() && (t.status === 'pendiente' || t.status === 'definicion');
-    $('btnStart').style.display = canStart ? '' : 'none';
-    // botones de trabajo en marcha (no terminado)
-    const working = ['realizacion','tests_auto','ejecucion_tests','aceptacion'].includes(t.status);
-    $('btnTest').style.display   = working ? '' : 'none';
-    $('btnAccept').style.display = working ? '' : 'none';
-    Tasks._agentsCache = d.agents || [];   // para avisar en accept si hay tests en rojo
+    // El usuario solo habla por el chat: lanzar, probar y guardar se ordenan por chat.
+    // Supervisión automática del Estratega: activa mientras haya algún agente vivo.
+    const anyRunning = (d.agents || []).some(a => a.kind === 'modulo' && a.status === 'running');
+    $('supInd').style.display = anyRunning ? '' : 'none';
+    Tasks._anyRunning = anyRunning;
+    Sup.sync(anyRunning);
     // chat
     Tasks.renderChat(d.messages || []);
     // agentes (columnas)
@@ -367,45 +391,6 @@ const Tasks = {
         <span style="flex:1">${esc(c.message || '')}</span>
         <span class="muted" style="font-size:12px">${Tasks.fmt(c.created_at)}</span>
       </div>`).join('');
-  },
-
-  async test(){
-    if (!Tasks.current) return;
-    const b = $('btnTest'); b.disabled = true; const old = b.textContent; b.textContent = 'Probando…';
-    try {
-      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/test', { method:'POST' });
-      const d = await r.json();
-      if (!r.ok){ alert(d.error || 'No se pudieron ejecutar los tests'); return; }
-      if (Tasks.current) Tasks.render(d);
-    } catch(e){ alert('Error de conexión'); }
-    finally { b.disabled = false; b.textContent = old; }
-  },
-
-  async accept(){
-    if (!Tasks.current) return;
-    const failed = (Tasks._agentsCache || []).filter(a => a.test_status === 'failed').map(a => a.module_name);
-    const warn = failed.length ? ('⚠️ Hay tests en rojo (' + failed.join(', ') + ').\n\n') : '';
-    if (!confirm(warn + '¿Guardar (commit) los cambios de los módulos de esta tarea?')) return;
-    const b = $('btnAccept'); b.disabled = true; const old = b.textContent; b.textContent = 'Guardando…';
-    try {
-      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/accept', { method:'POST' });
-      const d = await r.json();
-      if (!r.ok){ alert(d.error || 'No se pudo guardar'); return; }
-      if (Tasks.current) Tasks.render(d);
-    } catch(e){ alert('Error de conexión'); }
-    finally { b.disabled = false; b.textContent = old; }
-  },
-
-  async start(){
-    if (!Tasks.current) return;
-    const b = $('btnStart'); b.disabled = true; const old = b.textContent; b.textContent = 'Planificando…';
-    try {
-      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/start', { method:'POST' });
-      const d = await r.json();
-      if (!r.ok){ alert(d.error || 'No se pudo empezar'); return; }
-      if (Tasks.current) Tasks.render(d);
-    } catch(e){ alert('Error de conexión'); }
-    finally { b.disabled = false; b.textContent = old; }
   },
 
   renderChat(msgs){
@@ -486,7 +471,8 @@ const AgentLogs = {
         scrollback:3000, theme:{ background:'#0b1120', foreground:'#9fb2d8' } });
       const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
       term.open(el); try { fit.fit(); } catch(e){}
-      term.onData(d => this.send({ type:'input', sessionId:a.tmux_name, data:d }));
+      // Solo lectura: el usuario NO escribe a los agentes (solo habla con el chat;
+      // el Estratega los gestiona). No reenviamos las teclas al pane del agente.
       const col = { term, fit, tmux:a.tmux_name, agentId:a.id };
       this.cols.set(a.id, col); this.byTmux.set(a.tmux_name, col);
     });
@@ -530,14 +516,34 @@ const AgentLogs = {
 
 $('btnNewTask').addEventListener('click', () => Tasks.create());
 $('btnBack').addEventListener('click', () => Tasks.showList());
-$('btnStart').addEventListener('click', () => Tasks.start());
-$('btnTest').addEventListener('click', () => Tasks.test());
-$('btnAccept').addEventListener('click', () => Tasks.accept());
+/* ══════ Supervisión AUTOMÁTICA del Estratega (tick mientras haya agentes vivos) ══ */
+const Sup = {
+  timer:null, busy:false, INTERVAL:30000,
+  // arranca/para el tick según haya agentes vivos (siempre automático, sin control de usuario)
+  sync(anyRunning){ if (anyRunning) Sup.start(); else Sup.stop(); },
+  start(){ if (Sup.timer) return; Sup.timer = setInterval(() => Sup.tick(), Sup.INTERVAL); setTimeout(() => Sup.tick(), 1500); },
+  stop(){ if (Sup.timer){ clearInterval(Sup.timer); Sup.timer = null; } },
+  async tick(){
+    if (Sup.busy || !Tasks.current) return;
+    Sup.busy = true;
+    try {
+      const r = await fetch('/assistant/api/tasks/' + Tasks.current + '/supervise', { method:'POST' });
+      if (r.ok){ const d = await r.json(); if (Tasks.current && d && d.task) Tasks.render(d); }
+    } catch(e){} finally { Sup.busy = false; }
+  }
+};
 $('dtSend').addEventListener('click', () => Tasks.send());
 $('dtInput').addEventListener('input', e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; });
 $('dtInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); Tasks.send(); } });
 $('copyOv').addEventListener('click', e => { if (e.target.id === 'copyOv') Term.closeCopyText(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('copyOv').classList.contains('on')) Term.closeCopyText(); });
+$('pasteOv').addEventListener('click', e => { if (e.target.id === 'pasteOv') Term.closePaste(); });
+// Ctrl/Cmd+Enter en el cuadro de pegado = enviar al terminal.
+$('pasteArea').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); Term.pasteSend(); } });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if ($('copyOv').classList.contains('on')) Term.closeCopyText();
+  else if ($('pasteOv').classList.contains('on')) Term.closePaste();
+});
 
 /* Reconexión inmediata al recuperar red o volver a la pestaña: no esperamos a que el
    navegador descubra por su cuenta un socket medio-abierto (la causa de tener que
@@ -562,7 +568,9 @@ const Term = {
     // claude/tmux activan el "modo ratón": para seleccionar con el ratón mantén
     // SHIFT y arrastra (xterm fuerza la selección local). Para copiar la selección:
     // botón derecho, o Ctrl+C (cuando hay algo seleccionado), o Ctrl+Shift+C.
-    // Pegar: Ctrl+Shift+V o Shift+botón derecho.
+    // Pegar: botón "📥 Pegar" (Windows y Android), o Ctrl+Shift+V. En móvil hay además
+    // un botón "pegar" en la barra táctil. Si el navegador bloquea el portapapeles, se
+    // abre un cuadro donde se pega con el método nativo del dispositivo y se envía.
     Term.copyText = (text) => {
       if (!text) return Promise.resolve(false);
       if (navigator.clipboard && navigator.clipboard.writeText)
@@ -591,10 +599,12 @@ const Term = {
       Term.copyText(sel).then(ok => Term.flash(ok ? 'Copiado ✓ (' + sel.length + ')' : 'No se pudo copiar'));
       return true;
     };
-    Term.paste = () => {
-      if (navigator.clipboard && navigator.clipboard.readText)
-        navigator.clipboard.readText().then(t => { if (t && Term.current) Term.send({ type:'input', sessionId:Term.current, data:t }); }).catch(()=>{});
-    };
+    // Vuelca el texto al terminal por la MISMA vía que teclear (term.paste): así se
+    // respeta el "bracketed paste" cuando claude/el shell lo activan y un pegado de
+    // varias líneas NO se ejecuta línea a línea.
+    Term.doPaste = (text) => { if (text && Term.current && Term.term){ Term.term.paste(text); return true; } return false; };
+    // Ctrl+Shift+V: misma lógica que el botón "Pegar".
+    Term.paste = () => Term.openPaste();
     // Botón derecho = copiar (selección actual o la última guardada).
     $('term').addEventListener('contextmenu', (e) => { e.preventDefault(); Term.copy(); });
     Term.term.attachCustomKeyEventHandler((e) => {
@@ -628,6 +638,26 @@ const Term = {
     let ok = false; try { ok = document.execCommand('copy'); } catch(e){}
     if (!ok && navigator.clipboard) { navigator.clipboard.writeText(ta.value).catch(()=>{}); ok = true; }
     Term.flash(ok ? 'Copiado ✓' : 'No se pudo copiar');
+  },
+  // ── Pegar (Windows + Android) ───────────────────────────────────────────────
+  // Camino rápido: leer el portapapeles del navegador (Windows Chrome/Edge, Android
+  // Chrome con HTTPS). Si está bloqueado (sin permiso, sin HTTPS, Firefox, WebView…),
+  // abrimos un cuadro donde el usuario pega con el método nativo del dispositivo.
+  openPaste(forceOverlay){
+    if (!Term.current){ alert('Abre o selecciona una sesión primero.'); return; }
+    if (!forceOverlay && navigator.clipboard && navigator.clipboard.readText){
+      navigator.clipboard.readText()
+        .then(t => { if (t){ Term.doPaste(t); Term.flash('Pegado ✓ (' + t.length + ')'); } else Term._showPaste(); })
+        .catch(() => Term._showPaste());
+      return;
+    }
+    Term._showPaste();
+  },
+  _showPaste(){ const ta = $('pasteArea'); ta.value = ''; $('pasteOv').classList.add('on'); setTimeout(() => ta.focus(), 30); },
+  closePaste(){ $('pasteOv').classList.remove('on'); if (Term.term) Term.term.focus(); },
+  pasteSend(){
+    const v = $('pasteArea').value; Term.closePaste();
+    if (v){ Term.doPaste(v); Term.flash('Pegado ✓ (' + v.length + ')'); }
   },
   doFit(){ if(!Term.fit) return; try{ Term.fit.fit(); if(Term.current) Term.send({type:'resize',sessionId:Term.current,cols:Term.term.cols,rows:Term.term.rows}); }catch(e){} },
   connect(){
@@ -733,6 +763,7 @@ const Term = {
     enter:    () => sendSeq('\r'),
     tab:      () => sendSeq('\t'),
     esc:      () => sendSeq('\x1b'),
+    paste:    () => Term.openPaste(),
   };
   bar.addEventListener('click', e => {
     const b = e.target.closest('button[data-act]'); if (!b) return;
