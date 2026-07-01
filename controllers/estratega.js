@@ -6,11 +6,13 @@
 // ║  de la tarea al día y (en fases siguientes) coordinará a los agentes de    ║
 // ║  cada módulo. Un "turno" del Estratega es una llamada NO interactiva al    ║
 // ║  CLI `claude` (modo -p/print): le pasamos la conversación + la definición  ║
-// ║  actual y devuelve JSON { reply, definition, ready }. Sin herramientas:    ║
-// ║  este turno solo CONVERSA, no toca el repo.                                ║
+// ║  actual y devuelve JSON { reply, definition, ready, actions }.             ║
+// ║                                                                            ║
+// ║  Acceso de SOLO LECTURA al proyecto: corre con cwd=WORK_DIR y solo las     ║
+// ║  herramientas Read/Grep/Glob (sin Edit/Write/Bash), así puede CONSULTAR    ║
+// ║  el código, los SPEC.md y los esquemas SQL para fundamentar respuestas y   ║
+// ║  planes, pero NO puede modificar nada ni ejecutar shell.                   ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
-const fs    = require('fs');
-const os    = require('os');
 const path  = require('path');
 const { execFile } = require('child_process');
 const tasks = require('./tasks_store');
@@ -19,10 +21,14 @@ const modules = require('./modules_store');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const HOME_DIR   = process.env.CLAUDE_HOME || '/home/ubuntu';
 const MODEL      = process.env.ESTRATEGA_MODEL || 'sonnet';
-// cwd neutro y vacío: aunque el modelo intentara leer algo, aquí no hay nada que
-// tocar (defensa adicional a --disallowed-tools).
-const NEUTRAL_CWD = path.join(os.tmpdir(), 'assistant-estratega');
-try { fs.mkdirSync(NEUTRAL_CWD, { recursive: true }); } catch (e) {}
+// Raíz del proyecto (mismo que los agentes): el Estratega lee AQUÍ, en SOLO LECTURA.
+const WORK_DIR   = process.env.CLAUDE_WORK_DIR || path.join(__dirname, '..', '..');
+// Credenciales MySQL de SOLO LECTURA (usuario assistant_ro). El Estratega consulta
+// datos en vivo con `mysql --defaults-file=...`; el usuario read-only impide escribir.
+const DB_RO_DEFAULTS = process.env.DB_RO_DEFAULTS_FILE || '/home/factory/.assistant_ro.cnf';
+// Herramientas permitidas (todas de lectura): leer/buscar código + mysql (solo SELECT,
+// garantizado por el usuario read-only). Sin Edit/Write ni Bash general.
+const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(mysql:*)'];
 
 const SYSTEM = `Eres el ESTRATEGA de una plataforma de desarrollo asistido. Hablas con una
 persona SIN perfil técnico que quiere evolucionar su aplicación. Tu trabajo en esta fase:
@@ -37,6 +43,17 @@ persona SIN perfil técnico que quiere evolucionar su aplicación. Tu trabajo en
    suya a (a) un cambio en la "definition" y (b) acciones sobre los agentes (corregir con
    "enviar", abrir nuevos con "lanzar", o parar/hard_kill los que sobren). El usuario NUNCA
    habla con los agentes: los coordinas tú.
+
+PUEDES CONSULTAR el proyecto en SOLO LECTURA para fundamentar tus respuestas y planes:
+- CÓDIGO y ESQUEMA: lee el código, los SPEC.md de cada módulo y los esquemas SQL (ficheros sql/).
+- DATOS en vivo: ejecuta consultas de SOLO LECTURA con
+    mysql --defaults-file=${DB_RO_DEFAULTS} -N -e "<SQL>"
+  (usuario read-only: SOLO SELECT/SHOW/DESCRIBE; nada de escribir, sin tuberías). La BD de la
+  app es \`factory\` y sus tablas llevan prefijo de entorno (\`dev_\`, \`pro_\`); oriéntate con
+  SHOW TABLES y DESCRIBE.
+NO puedes modificar nada (ni código ni datos). Si el usuario pregunta por una pantalla, dato o
+estructura que YA existe, INVESTÍGALO en el código/esquema/BD antes de responder; NO digas que
+no tienes acceso. Al usuario háblale siempre en lenguaje de negocio, sin tecnicismos.
 
 Hablas español, cercano y conciso. La aplicación está dividida en módulos (secciones); los
 conoces solo para orientarte, no se los menciones al usuario salvo que ayude.
@@ -98,9 +115,9 @@ function buildPrompt({ task, messages, mods, agentStates }) {
 function runClaude(prompt) {
     return new Promise((resolve, reject) => {
         const args = ['-p', '--output-format', 'json', '--model', MODEL,
-            '--disallowed-tools', 'Bash', 'Edit', 'Write', 'WebSearch', 'WebFetch'];
+            '--allowed-tools', ...READ_TOOLS];   // solo lectura: Read/Grep/Glob (sin Edit/Write/Bash)
         const child = execFile(CLAUDE_BIN, args, {
-            cwd: NEUTRAL_CWD,
+            cwd: WORK_DIR,                        // lee el proyecto real, en solo lectura
             env: { ...process.env, HOME: HOME_DIR },
             timeout: 120000,
             maxBuffer: 8 * 1024 * 1024,
