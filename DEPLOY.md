@@ -24,6 +24,13 @@ Una sola **BD de empresa** (p. ej. `factory`) con **prefijo de entorno por tabla
 `pro` es un **git worktree** del mismo repo que `dev` (comparten `.git`). Los `.env` y
 `node_modules` están *gitignored*, así que el deploy **no los pisa**.
 
+> **El asistente solo corre en DESARROLLO.** El proceso del propio asistente
+> (`Factory-assistant`, en `/home/factory/assistant`, puerto **5620**) vive únicamente en el
+> entorno **dev**: es una herramienta de desarrollo. En **producción NO hay asistente** — el
+> deploy a pro (`deploy-to-pro.sh`) promociona solo la **app** y nunca levanta ni expone el
+> asistente. (El repo `assistant/` sí llega a cada proyecto por `git pull`, pero su proceso
+> no se arranca en pro.)
+
 ---
 
 ## 1. Migraciones — `tools/migrate.js`
