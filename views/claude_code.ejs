@@ -78,6 +78,12 @@
     .agent .alog{flex:1;padding:10px 12px;font-family:Consolas,Menlo,monospace;font-size:12px;color:#9fb2d8;white-space:pre-wrap;overflow:auto;min-height:0}
     .dot-s{width:8px;height:8px;border-radius:50%;background:#30363d;flex-shrink:0}
     .dot-s.running{background:#3fb950}.dot-s.exited{background:#f85149}
+    /* log del Estratega (texto legible, no monospace) + notas */
+    .agent.strat .alog{font-family:inherit;font-size:12.5px;line-height:1.45}
+    .strat-note{padding:6px 2px;border-bottom:1px solid #14203a;color:#d6e0f0;white-space:pre-wrap}
+    .strat-note:last-child{border-bottom:none}
+    /* indicador "Trabajando…" en el chat (traducción de negocio de la actividad) */
+    .bub.work-ind{background:#16203a;color:#9fb2d8;font-style:italic;opacity:.85}
     .btn:disabled{opacity:.4;cursor:default}
     /* ── Terminal ── */
     .term-layout{display:flex;height:100%;width:100%}
@@ -373,10 +379,11 @@ const Tasks = {
     $('supInd').style.display = anyRunning ? '' : 'none';
     Tasks._anyRunning = anyRunning;
     Sup.sync(anyRunning);
-    // chat
-    Tasks.renderChat(d.messages || []);
-    // agentes (columnas)
+    // chat (solo negocio) + indicador "Trabajando…" mientras haya agentes activos
+    Tasks.renderChat(d.messages || [], anyRunning);
+    // agentes (columnas) + log técnico del Estratega en su columna
     Tasks.renderAgents(d.agents || []);
+    Tasks.renderEstrategaLog(d.messages || []);
     // commits ligados a la tarea
     Tasks.renderCommits(d.commits || []);
   },
@@ -393,11 +400,32 @@ const Tasks = {
       </div>`).join('');
   },
 
-  renderChat(msgs){
+  renderChat(msgs, working){
     const box = $('dtChat');
-    if (!msgs.length){ box.innerHTML = '<div class="muted" style="text-align:center;padding:20px 0">Empieza la conversación contando qué necesitas.</div>'; return; }
-    box.innerHTML = msgs.map(m => `<div class="bub ${m.role === 'user' ? 'user' : 'assistant'}">${esc(m.content)}</div>`).join('');
+    // El chat es SOLO diálogo de negocio usuario↔Estratega. Las notas técnicas de
+    // coordinación (rol 'estratega') NO van aquí, sino a la columna del Estratega.
+    const chat = (msgs || []).filter(m => m.role === 'user' || m.role === 'assistant');
+    let html = chat.length
+      ? chat.map(m => `<div class="bub ${m.role === 'user' ? 'user' : 'assistant'}">${esc(m.content)}</div>`).join('')
+      : '<div class="muted" style="text-align:center;padding:20px 0">Empieza la conversación contando qué necesitas.</div>';
+    // Traducción de negocio de la actividad técnica: mientras trabaja, "Trabajando…".
+    if (working) html += '<div class="bub assistant work-ind">⚙️ Trabajando…</div>';
+    box.innerHTML = html;
     box.scrollTop = box.scrollHeight;
+  },
+
+  // Log TÉCNICO del Estratega (rol 'estratega'): supervisión + acciones. Va en su
+  // columna de la parrilla, no en el chat. Se refresca en cada render (no depende
+  // de que cambien los agentes de módulo).
+  renderEstrategaLog(msgs){
+    const el = $('stratLog'); if (!el) return;
+    const notes = (msgs || []).filter(m => m.role === 'estratega');
+    if (!notes.length){
+      el.innerHTML = '<span class="muted">El Estratega traduce lo que pides, reparte el trabajo a los módulos y los supervisa. Aquí verás lo que va haciendo.</span>';
+      return;
+    }
+    el.innerHTML = notes.map(m => `<div class="strat-note">${esc(m.content)}</div>`).join('');
+    el.scrollTop = el.scrollHeight;
   },
 
   renderAgents(agents){
@@ -410,11 +438,9 @@ const Tasks = {
     AgentLogs.reset();
     // Columna del Estratega (siempre) + una por módulo (log en vivo).
     let html = `<div class="agent strat">
-      <div class="ah"><span class="dot-s ${mods.length ? 'exited' : ''}"></span>Estratega
+      <div class="ah"><span class="dot-s ${mods.some(a => a.status === 'running') ? 'running' : ''}"></span>Estratega
         <span style="flex:1"></span><span class="tag">Estratega</span></div>
-      <div class="alog muted">${mods.length
-        ? 'Plan repartido a ' + mods.length + ' módulo(s). Cada uno trabaja en su columna.'
-        : 'El Estratega traduce lo que pides a un plan técnico y reparte el trabajo a los módulos.'}</div>
+      <div class="alog strat-log" id="stratLog"><span class="muted">El Estratega reparte el trabajo a los módulos y los supervisa. Aquí verás lo que va haciendo.</span></div>
     </div>`;
     const tb = { passed:'✅ tests', failed:'❌ tests', running:'⏳ tests', none:'' };
     html += mods.map(a => `<div class="agent" data-agent="${a.id}">

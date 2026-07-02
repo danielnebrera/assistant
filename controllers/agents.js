@@ -26,6 +26,16 @@ const APP_REL      = process.env.APP_DIR || 'app';
 const MODULES_REL  = process.env.MODULES_DIR || 'app/modules';
 const CONTRACT     = process.env.MODULE_CONTRACT_FILE || 'CLAUDE.md';
 const PERM_MODE   = process.env.AGENT_PERMISSION_MODE || 'acceptEdits';
+// Settings COMUNES a todos los agentes de módulo (viven en /assistant, no en /app):
+// registran el hook PreToolUse `guard-module.js` que confina cada agente a su carpeta.
+const AGENT_SETTINGS = process.env.AGENT_SETTINGS_FILE || path.join(__dirname, '..', 'agent-settings.json');
+// Metodología COMÚN a todos los proyectos: criterios de diseño, arquitectura y
+// objetivos comunes (distintos para `main` y para el resto). Viven en /assistant
+// (repo común, evolucionable con `git pull` para TODAS las apps) — NUNCA en /app.
+// Se INCRUSTAN en el prompt del agente para no depender de que lea nada externo.
+const COMMON_SPEC_DIR     = process.env.COMMON_SPEC_DIR || path.join(__dirname, '..');
+const COMMON_SPEC_GENERAL = process.env.COMMON_SPEC_GENERAL || path.join(COMMON_SPEC_DIR, 'COMMON_MODULE_SPEC_GENERAL.md');
+const COMMON_SPEC_MAIN    = process.env.COMMON_SPEC_MAIN    || path.join(COMMON_SPEC_DIR, 'COMMON_MODULE_SPEC_MAIN.md');
 const PROMPT_DIR  = path.join(os.tmpdir(), 'assistant-agents');
 try { fs.mkdirSync(PROMPT_DIR, { recursive: true }); } catch (e) {}
 
@@ -58,6 +68,18 @@ function planPrompt({ task, messages, mods }) {
 // Prompt sembrado en el agente de un módulo (primer turno, lenguaje técnico).
 // Arquitectura: monolito modular. El módulo vive en `app/modules/<m>/`, su contrato
 // es `CLAUDE.md`, y sus tests a nivel app en `app/test/<m>*.test.js`.
+// Carga la metodología común (de /assistant) que aplica a este módulo: la de `main`
+// o la genérica. Se incrusta en el prompt; si faltara el fichero, se degrada sin romper.
+function commonMethodology(moduleName) {
+    const file = moduleName === 'main' ? COMMON_SPEC_MAIN : COMMON_SPEC_GENERAL;
+    try {
+        const txt = fs.readFileSync(file, 'utf8').trim();
+        if (txt) return `\n--- METODOLOGÍA COMÚN (criterios de diseño, arquitectura y objetivos; ` +
+            `inmutable y común a todos los proyectos) ---\n${txt}\n`;
+    } catch (e) { /* fichero ausente: seguimos sin bloque común */ }
+    return '';
+}
+
 function agentPrompt(moduleName, definition, brief) {
     const modDir = `${MODULES_REL}/${moduleName}`;
     return `Eres el agente del módulo «${moduleName}» del monolito modular factory3 (${path.join(WORK_DIR, modDir)}).
@@ -67,9 +89,9 @@ ${definition}
 
 TU ENCARGO EN ESTE MÓDULO:
 ${brief}
-
+${commonMethodology(moduleName)}
 REGLAS OBLIGATORIAS:
-1. Lee primero ${modDir}/${CONTRACT} y el CLAUDE.md raíz, y respétalos.
+1. Cumple la METODOLOGÍA COMÚN de arriba. Además, lee ${modDir}/${CONTRACT} (contrato ESPECÍFICO de este módulo) y respétalo.
 2. DOCUMENTA el cambio en ${modDir}/${CONTRACT} ANTES de tocar el código.
 3. Regla de Oro: este módulo SOLO accede a SUS tablas; para datos de otro módulo llama a su \`<otro>.service.js\`. NUNCA hagas db.query sobre tablas ajenas ni edites ficheros de otros módulos.
 4. El código del módulo está en ${modDir}/ (ficheros \`*.queries.js\` / \`*.service.js\` / \`*.routes.js\`). Sus tests están en ${APP_REL}/test/${moduleName}*.test.js — añádelos o actualízalos.
@@ -104,43 +126,47 @@ async function planAndLaunch(taskId) {
     plan = plan.filter(p => p && validNames.has(p.name) && !seen.has(p.name) && seen.add(p.name));
     if (!plan.length) throw new Error('El Estratega no identificó módulos que tocar. Define mejor la tarea en el chat.');
 
-    const modByName = Object.fromEntries(mods.map(m => [m.name, m]));
-    const definition = (await tasks.get(taskId)).definition || task.definition || '';
-
-    // 2) Un agente por módulo.
+    // 2) Un agente por módulo (idempotente: launchModule salta los que ya trabajan).
     const launched = [];
-    let pos = 0;
-    for (const p of plan) {
-        const mod = modByName[p.name];
-        const r = await db.query(
-            `INSERT INTO ${db.t('assistant_agent')} (task_id, kind, module_id, title, status, position)
-             VALUES (?, 'modulo', ?, ?, 'idle', ?)`,
-            [taskId, mod.id, p.name, pos++]
-        );
-        const agentId = r.insertId;
-        const name = 'ag_' + agentId;
-        const promptFile = path.join(PROMPT_DIR, name + '.txt');
-        fs.writeFileSync(promptFile, agentPrompt(p.name, definition, p.brief || ''));
-        // bash -lc: claude recibe el prompt (posicional) leído del fichero.
-        const command = `exec claude --permission-mode ${PERM_MODE} "$(cat ${promptFile})"`;
-        const ok = await tmux.create(name, WORK_DIR, command);
-        if (ok) {
-            const pid = await tmux.panePid(name);
-            await db.query(`UPDATE ${db.t('assistant_agent')} SET tmux_name=?, pid=?, status='running' WHERE id=?`,
-                [name, pid, agentId]);
-            // Hands-free: si claude muestra el aviso de "Bypass Permissions mode",
-            // lo aceptamos por el agente (sin esto se queda esperando). Se hace en
-            // segundo plano para no retrasar la respuesta; solo pulsa si DETECTA el
-            // aviso (no manda nada si no aparece, para no escribir en el chat).
-            acceptBypassIfPrompted(name).catch(() => {});
-        } else {
-            await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]);
-        }
-        launched.push({ agentId, module: p.name, ok });
-    }
+    for (const p of plan) launched.push(await launchModule(taskId, p.name, p.brief || ''));
 
     await tasks.setStatus(taskId, 'realizacion');
     return { launched };
+}
+
+// Lanza UN agente de módulo para la tarea. IDEMPOTENTE: si ya hay un agente
+// TRABAJANDO en ese módulo, no abre otro. Reutilizable por planAndLaunch y por la
+// acción "abrir" del Estratega (corrección: añadir un módulo sin replanificar todo).
+async function launchModule(taskId, moduleName, brief) {
+    const running = await db.query(
+        `SELECT a.id FROM ${db.t('assistant_agent')} a LEFT JOIN ${db.t('assistant_module')} m ON m.id=a.module_id
+          WHERE a.task_id=? AND a.kind='modulo' AND m.name=? AND a.status='running'`, [taskId, moduleName]);
+    if (running.length) return { module: moduleName, ok: true, skipped: 'ya trabajando' };
+    const mrow = await db.query(`SELECT id FROM ${db.t('assistant_module')} WHERE name=? AND active=1 LIMIT 1`, [moduleName]);
+    if (!mrow.length) return { module: moduleName, ok: false, error: 'módulo desconocido o inactivo' };
+    const task = await tasks.get(taskId);
+    const definition = (task && task.definition) || '';
+    const posRow = await db.query(`SELECT COALESCE(MAX(position)+1,0) AS p FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo'`, [taskId]);
+    const r = await db.query(
+        `INSERT INTO ${db.t('assistant_agent')} (task_id, kind, module_id, title, status, position)
+         VALUES (?, 'modulo', ?, ?, 'idle', ?)`, [taskId, mrow[0].id, moduleName, posRow[0].p]);
+    const agentId = r.insertId;
+    const name = 'ag_' + agentId;
+    const promptFile = path.join(PROMPT_DIR, name + '.txt');
+    fs.writeFileSync(promptFile, agentPrompt(moduleName, definition, brief || ''));
+    // Carpeta permitida (raíz del veto del guardián) + AGENT_MODULE/DIR para el hook.
+    const moduleDir = path.join(WORK_DIR, MODULES_REL, moduleName);
+    const command = `AGENT_MODULE='${moduleName}' AGENT_MODULE_DIR='${moduleDir}' `
+        + `exec claude --permission-mode ${PERM_MODE} --settings '${AGENT_SETTINGS}' "$(cat ${promptFile})"`;
+    const ok = await tmux.create(name, WORK_DIR, command);
+    if (ok) {
+        const pid = await tmux.panePid(name);
+        await db.query(`UPDATE ${db.t('assistant_agent')} SET tmux_name=?, pid=?, status='running' WHERE id=?`, [name, pid, agentId]);
+        acceptBypassIfPrompted(name).catch(() => {});
+    } else {
+        await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]);
+    }
+    return { agentId, module: moduleName, ok };
 }
 
 // Acepta el aviso "Bypass Permissions mode" de claude si aparece (hands-free).
@@ -330,9 +356,16 @@ async function softStopAgent(taskId, agentId) {
 async function hardKillAgent(taskId, agentId) {
     const a = await agentOfTask(taskId, agentId);
     if (!a) throw new Error('Agente no encontrado');
-    if (a.tmux_name) await tmux.kill(a.tmux_name);
+    let killed = true;
+    if (a.tmux_name) {
+        await tmux.kill(a.tmux_name);
+        await sleep(200);
+        if (await tmux.exists(a.tmux_name)) { await tmux.kill(a.tmux_name); await sleep(300); }
+        killed = !(await tmux.exists(a.tmux_name));
+    }
     await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]);
-    return { ok: true };
+    if (!killed) throw new Error('no se pudo matar la sesión tmux ' + a.tmux_name);
+    return { ok: true, killed };
 }
 
 // Parada SUAVE de TODOS los agentes vivos de la tarea (botón de emergencia).
@@ -365,13 +398,25 @@ async function agentStates(taskId, tailLines = 30) {
 }
 
 // El agente (de módulo) de una tarea por nombre de módulo. null si no existe.
+// Prefiere uno EN MARCHA; entre ellos, el más reciente.
 async function agentByModule(taskId, moduleName) {
     const rows = await db.query(
         `SELECT a.id, a.tmux_name, a.status FROM ${db.t('assistant_agent')} a
            LEFT JOIN ${db.t('assistant_module')} m ON m.id = a.module_id
-          WHERE a.task_id=? AND a.kind='modulo' AND m.name=? ORDER BY a.id DESC LIMIT 1`,
+          WHERE a.task_id=? AND a.kind='modulo' AND m.name=?
+          ORDER BY (a.status='running') DESC, a.id DESC LIMIT 1`,
         [taskId, moduleName]);
     return rows[0] || null;
+}
+
+// TODOS los agentes de un módulo en la tarea (puede haber varios si en rondas
+// anteriores se abrió repetido). parar/hard_kill deben barrerlos todos.
+async function agentsByModule(taskId, moduleName) {
+    return db.query(
+        `SELECT a.id, a.tmux_name, a.status FROM ${db.t('assistant_agent')} a
+           LEFT JOIN ${db.t('assistant_module')} m ON m.id = a.module_id
+          WHERE a.task_id=? AND a.kind='modulo' AND m.name=? ORDER BY a.id DESC`,
+        [taskId, moduleName]);
 }
 
 // Ejecuta las ACCIONES que decide el Estratega (lanzar / enviar / parar /
@@ -384,10 +429,15 @@ async function executeActions(taskId, actions) {
         const op = ac && ac.op;
         try {
             if (op === 'lanzar') {
-                const ex = await db.query(`SELECT COUNT(*) AS n FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo'`, [taskId]);
-                if (ex[0].n > 0) { done.push({ op, skipped: 'ya hay agentes lanzados' }); continue; }
+                // planAndLaunch es idempotente (salta módulos que ya trabajan y abre los
+                // que falten), así que sirve tanto para el arranque como para reabrir.
                 const r = await planAndLaunch(taskId);
-                done.push({ op, launched: (r.launched || []).length });
+                done.push({ op, launched: (r.launched || []).filter(x => x.ok && !x.skipped).length });
+            } else if (op === 'abrir') {
+                // Añade UN agente de módulo (corrección: sumar un módulo sin replanificar).
+                const r = await launchModule(taskId, ac.module, ac.brief || '');
+                if (r.error) done.push({ op, module: ac.module, error: r.error });
+                else done.push({ op, module: ac.module, opened: !r.skipped });
             } else if (op === 'parar_todos') {
                 const r = await softStopAll(taskId);
                 done.push({ op, stopped: r.stopped });
@@ -397,12 +447,22 @@ async function executeActions(taskId, actions) {
             } else if (op === 'guardar') {
                 const r = await commitTask(taskId);
                 done.push({ op, sha: (r.sha || '').slice(0, 8) });
-            } else if (op === 'parar' || op === 'hard_kill' || op === 'enviar') {
+            } else if (op === 'enviar') {
                 const a = await agentByModule(taskId, ac.module);
                 if (!a) { done.push({ op, module: ac.module, error: 'agente no encontrado' }); continue; }
-                if (op === 'parar') { await softStopAgent(taskId, a.id); done.push({ op, module: ac.module }); }
-                else if (op === 'hard_kill') { await hardKillAgent(taskId, a.id); done.push({ op, module: ac.module }); }
-                else { await sendToAgent(taskId, a.id, ac.text || ''); done.push({ op, module: ac.module }); }
+                await sendToAgent(taskId, a.id, ac.text || '');
+                done.push({ op, module: ac.module });
+            } else if (op === 'parar' || op === 'hard_kill') {
+                // Barre TODOS los agentes de ese módulo (puede haber duplicados de rondas previas).
+                const list = await agentsByModule(taskId, ac.module);
+                const targets = op === 'parar' ? list.filter(x => x.status === 'running') : list;
+                if (!targets.length) { done.push({ op, module: ac.module, error: 'sin agentes de ese módulo' }); continue; }
+                let n = 0;
+                for (const ag of targets) {
+                    try { if (op === 'parar') await softStopAgent(taskId, ag.id); else await hardKillAgent(taskId, ag.id); n++; }
+                    catch (e) { /* seguimos con los demás */ }
+                }
+                done.push({ op, module: ac.module, count: n });
             } else {
                 done.push({ op: op || '(vacío)', error: 'acción desconocida' });
             }

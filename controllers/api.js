@@ -15,6 +15,11 @@ const wrap = (fn) => (req, res) =>
         res.status(500).json({ error: err.message });
     });
 
+// Turnos del Estratega EN CURSO por tarea. La supervisión automática NO debe apilarse
+// sobre un turno que ya corre (mensaje del usuario u otra supervisión): evita saturar
+// con varias llamadas a `claude` a la vez (causa de "conversación colgada").
+const turnInFlight = new Set();
+
 // Carga la tarea de :id y verifica que es del usuario. Si no, responde el error
 // y devuelve null (el handler debe `if (!task) return;`).
 async function ownTask(req, res) {
@@ -33,6 +38,9 @@ function summarizeActions(executed) {
         else if (e.op === 'probar') parts.push(e.allPass ? 'tests en verde ✅' : 'hay tests en rojo ❌');
         else if (e.op === 'guardar') parts.push('cambios guardados' + (e.sha ? ' (' + e.sha + ')' : ''));
         else if (e.op === 'lanzar' && e.launched) parts.push('desarrollo iniciado: ' + e.launched + ' agente(s)');
+        else if (e.op === 'abrir' && e.opened) parts.push('abierto agente de ' + e.module);
+        else if (e.op === 'hard_kill' && e.count) parts.push('cerrado' + (e.count > 1 ? 's ' + e.count : '') + ' agente' + (e.count > 1 ? 's' : '') + ' de ' + e.module);
+        else if (e.op === 'parar' && e.count) parts.push('parado' + (e.count > 1 ? 's ' + e.count : '') + ' agente' + (e.count > 1 ? 's' : '') + ' de ' + e.module);
     }
     return parts.join('; ');
 }
@@ -87,10 +95,13 @@ router.post('/tasks/:id/messages', wrap(async (req, res) => {
     // (parar / corregir / parar todos). Le pasamos su estado y ejecutamos lo que decida.
     await agents.syncStatuses(task.id);
     const states = await agents.agentStates(task.id);
-    const out = await estratega.respond(task.id, states);   // añade la respuesta + (def/estado)
-    const executed = (out && out.actions && out.actions.length) ? await agents.executeActions(task.id, out.actions) : [];
-    const note = summarizeActions(executed);   // feedback de tests/commit/lanzar/errores
-    if (note) await tasks.addMessage(task.id, 'assistant', '🤖 ' + note);
+    turnInFlight.add(String(task.id));
+    try {
+        const out = await estratega.respond(task.id, states);   // añade la respuesta + (def/estado)
+        const executed = (out && out.actions && out.actions.length) ? await agents.executeActions(task.id, out.actions) : [];
+        const note = summarizeActions(executed);   // feedback de tests/commit/lanzar/errores
+        if (note) await tasks.addMessage(task.id, 'estratega', note);   // técnico → columna del Estratega
+    } finally { turnInFlight.delete(String(task.id)); }
     const d = await tasks.detail(task.id);
     d.statuses = tasks.STATUSES; d.statusLabel = tasks.STATUS_LABEL;
     res.json(d);
@@ -105,6 +116,13 @@ router.post('/tasks/:id/messages', wrap(async (req, res) => {
 // haya agentes en marcha y la supervisión esté activa. Devuelve el detalle + nota.
 router.post('/tasks/:id/supervise', wrap(async (req, res) => {
     const task = await ownTask(req, res); if (!task) return;
+    // Si ya hay un turno del Estratega en curso, NO lanzamos supervisión encima.
+    if (turnInFlight.has(String(task.id))) {
+        const d0 = await tasks.detail(task.id);
+        d0.statuses = tasks.STATUSES; d0.statusLabel = tasks.STATUS_LABEL;
+        d0.supervision = { active: true, skipped: 'turno en curso' };
+        return res.json(d0);
+    }
     await agents.syncStatuses(task.id);
     const states = await agents.agentStates(task.id);
     const live = states.filter(s => s.status === 'running');
@@ -114,16 +132,20 @@ router.post('/tasks/:id/supervise', wrap(async (req, res) => {
         d0.supervision = { active: false };
         return res.json(d0);
     }
-    const r = await estratega.supervise(task.id, states);
-    const executed = (r.actions && r.actions.length) ? await agents.executeActions(task.id, r.actions) : [];
-    // Solo dejamos rastro en el chat si el Estratega tiene algo que decir/hizo algo.
-    if (r.note || executed.length) {
-        const tail = executed.length ? '  ·  acciones: ' + executed.map(e => e.op + (e.module ? '(' + e.module + ')' : '')).join(', ') : '';
-        await tasks.addMessage(task.id, 'assistant', '🤖 ' + (r.note || 'Intervención del supervisor.') + tail);
-    }
+    turnInFlight.add(String(task.id));
+    let r, executed = [];
+    try {
+        r = await estratega.supervise(task.id, states);
+        executed = (r.actions && r.actions.length) ? await agents.executeActions(task.id, r.actions) : [];
+        // Solo dejamos rastro en el chat si el Estratega tiene algo que decir/hizo algo.
+        if (r.note || executed.length) {
+            const tail = executed.length ? '  ·  acciones: ' + executed.map(e => e.op + (e.module ? '(' + e.module + ')' : '')).join(', ') : '';
+            await tasks.addMessage(task.id, 'estratega', (r.note || 'Intervención del supervisor.') + tail);   // técnico → columna del Estratega
+        }
+    } finally { turnInFlight.delete(String(task.id)); }
     const d = await tasks.detail(task.id);
     d.statuses = tasks.STATUSES; d.statusLabel = tasks.STATUS_LABEL;
-    d.supervision = { active: true, note: r.note || '', actions: executed };
+    d.supervision = { active: true, note: (r && r.note) || '', actions: executed };
     res.json(d);
 }));
 

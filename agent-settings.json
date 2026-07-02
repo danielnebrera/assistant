@@ -1,0 +1,13 @@
+{
+  "_comment": "Settings COMUNES a los agentes de módulo del asistente. Se cargan con `claude --settings <este fichero>` desde agents.js, así el veto vive en /assistant y NO ensucia el repo de la app. Registra el guardián PreToolUse que confina cada agente a su carpeta de módulo (ruta permitida vía env AGENT_MODULE_DIR).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "node /home/factory/assistant/hooks/guard-module.js" }
+        ]
+      }
+    ]
+  }
+}

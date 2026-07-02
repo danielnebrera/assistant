@@ -61,11 +61,16 @@ conoces solo para orientarte, no se los menciones al usuario salvo que ayude.
 Responde SIEMPRE y SOLO con un objeto JSON válido (sin texto alrededor, sin markdown) con
 esta forma exacta:
 {
-  "reply": "tu mensaje para el usuario (lenguaje natural, cercano)",
+  "reply": "mensaje para el usuario NO técnico, SOLO cuando haga falta: una PREGUNTA de negocio o una decisión que necesites de él, o un hito importante (p.ej. 'ya está listo'). Si solo estás trabajando/coordinando, deja \\"\\" (la pantalla ya muestra 'Trabajando…'). NUNCA pongas detalle técnico aquí.",
   "definition": "la definición de la tarea ACTUALIZADA en lenguaje de negocio; deja \\"\\" si todavía no tienes suficiente para definirla",
   "ready": true|false,  // true solo cuando la definición está clara y completa para empezar a desarrollar
   "actions": []         // órdenes para los agentes (ver protocolo); [] si no hay nada que hacer
-}`;
+}
+
+El CHAT es SOLO para el usuario no técnico (lenguaje de negocio). El detalle técnico de
+coordinación (abrir/parar/hard_kill agentes, tests, etc.) va por "actions" y se registra en el
+panel del Estratega, NUNCA en "reply". Usa "reply" con moderación: sobre todo para PREGUNTAR
+decisiones de negocio o avisar de un hito; mientras trabajas, "reply" vacío.`;
 
 // Protocolo de ACCIONES: el Estratega DECIDE (solo texto→JSON); el código de
 // confianza (agents.executeActions) las EJECUTA contra los agentes. El Estratega
@@ -73,15 +78,17 @@ esta forma exacta:
 const ACTION_PROTOCOL = `Además de "reply" puedes incluir un array "actions" con órdenes que el sistema
 EJECUTA por ti sobre los agentes (déjalo [] si no hay nada que hacer). TÚ gestionas a los agentes:
 el usuario NO habla con ellos, solo contigo. Operaciones válidas:
-- { "op": "lanzar" }                          // empieza el desarrollo (planifica módulos y abre 1 agente por módulo). Úsalo cuando el usuario te dé la orden de empezar y la definición esté clara, y aún no haya agentes.
+- { "op": "lanzar" }                          // arranque INICIAL: planifica y abre 1 agente por cada módulo necesario. Úsalo al EMPEZAR, cuando aún no hay agentes.
+- { "op": "abrir", "module": "<módulo>", "brief": "encargo técnico concreto para ese agente" }  // añade UN agente de módulo. Úsalo al CORREGIR la tarea si hace falta un módulo nuevo (p.ej. admin). Si ya hay uno trabajando en ese módulo, no hace nada.
 - { "op": "enviar", "module": "<módulo>", "text": "instrucción o corrección para ese agente" }
 - { "op": "parar",  "module": "<módulo>" }    // parada SUAVE (Esc + 'detente'); conserva su contexto
-- { "op": "hard_kill", "module": "<módulo>" } // mata su sesión; úsalo si un agente SOBRA (duplicado o ya no lo pide la definición) o está irrecuperable
+- { "op": "hard_kill", "module": "<módulo>" } // CIERRA (mata) el agente de ese módulo; úsalo si SOBRA (ya no lo pide la definición), está duplicado o irrecuperable
 - { "op": "parar_todos" }                     // emergencia: parada suave de todos
-- { "op": "probar" }                          // ejecuta los tests de los módulos de la tarea. Úsalo cuando el usuario pida probar, o cuando el desarrollo esté terminado y proceda verificar.
-- { "op": "guardar" }                         // acepta y GUARDA (commit) los cambios de la tarea. Úsalo SOLO cuando el usuario lo pida explícitamente: es definitivo.
-Reconoce SIEMPRE cuántos agentes hay abiertos: si alguno sobra, páralo o hard_kill; si la definición
-cambia, propaga la corrección con "enviar" y abre/cierra agentes según haga falta.
+- { "op": "probar" }                          // ejecuta los tests de los módulos de la tarea.
+- { "op": "guardar" }                         // acepta y GUARDA (commit); SOLO cuando el usuario lo pida explícitamente.
+Reconoce SIEMPRE cuántos agentes hay abiertos. Al CORREGIR la tarea: usa "abrir" para AÑADIR un
+módulo nuevo, "hard_kill" para CERRAR el que ya no haga falta, y "enviar" para reorientar a los que
+siguen. NO uses "lanzar" para añadir un módulo suelto (eso es solo el arranque inicial).
 Sé CONSERVADOR con parar/hard_kill: solo cuando de verdad sobra o se desvía.`;
 
 function renderAgentStates(agentStates) {
@@ -96,16 +103,27 @@ function renderAgentStates(agentStates) {
 function buildPrompt({ task, messages, mods, agentStates }) {
     const modList = mods.filter(m => m.active).map(m => '- ' + m.name).join('\n');
     const convo = messages.map(m => (m.role === 'user' ? 'USUARIO' : 'ESTRATEGA') + ': ' + m.content).join('\n\n');
-    const live = agentStates && agentStates.length;
+    const running = (agentStates || []).filter(a => a.status === 'running').length;
+    const done = ['hecho', 'commit'].includes(task.status);
+    let stateNote;
+    if (running) {
+        stateNote = renderAgentStates(agentStates) + '\n(Hay ' + running + ' agente(s) TRABAJANDO. Si el usuario pide cambios, ACTUALIZA la "definition" y propaga: "enviar" para corregir a cada agente afectado, "abrir" para AÑADIR un módulo nuevo, "hard_kill" para CERRAR el que sobre.)';
+    } else if (done) {
+        stateNote = (agentStates && agentStates.length ? renderAgentStates(agentStates) + '\n' : '') +
+            '\n(Esta tarea ya está TERMINADA y guardada, pero SIGUES conversando con normalidad:\n' +
+            '- Si el mensaje es una CONTINUACIÓN o PRECISIÓN de esta misma tarea, actualiza la "definition" y, si requiere trabajo, REÁBRELA con la acción "lanzar".\n' +
+            '- Si es algo DISTINTO (otra funcionalidad no relacionada), NO amplíes esta tarea: recomienda amablemente al usuario guardar/cerrar esta y abrir una tarea NUEVA para eso.)';
+    } else {
+        stateNote = '\n(Aún NO hay agentes en marcha. Cuando el usuario te ordene empezar y la definición esté clara, emite la acción "lanzar".)';
+    }
     return [
         SYSTEM,
         '\n' + ACTION_PROTOCOL,
         '\n--- MÓDULOS DE LA APP (solo para tu orientación) ---\n' + (modList || '(ninguno)'),
         '\n--- TÍTULO DE LA TAREA ---\n' + (task.title || ''),
+        '\n--- ESTADO DE LA TAREA ---\n' + (task.status || ''),
         '\n--- DEFINICIÓN ACTUAL ---\n' + (task.definition && task.definition.trim() ? task.definition : '(aún sin definir)'),
-        live
-            ? renderAgentStates(agentStates) + '\n(Hay ' + agentStates.length + ' agente(s) abiertos. Si el usuario pide cambios, ACTUALIZA la "definition" y propaga: "enviar" para corregir a cada agente afectado, "lanzar" si hace falta un módulo nuevo, "parar"/"hard_kill" para los que sobren.)'
-            : '\n(Aún NO hay agentes en marcha. Cuando el usuario te ordene empezar y la definición esté clara, emite la acción "lanzar".)',
+        stateNote,
         '\n--- CONVERSACIÓN HASTA AHORA ---\n' + (convo || '(vacía)'),
         '\nResponde al último mensaje del USUARIO. Devuelve SOLO el JSON.',
     ].join('\n');
@@ -119,10 +137,15 @@ function runClaude(prompt) {
         const child = execFile(CLAUDE_BIN, args, {
             cwd: WORK_DIR,                        // lee el proyecto real, en solo lectura
             env: { ...process.env, HOME: HOME_DIR },
-            timeout: 120000,
-            maxBuffer: 8 * 1024 * 1024,
+            // El turno ahora usa herramientas (lee código/BD): más margen que los 120s originales.
+            timeout: Number(process.env.ESTRATEGA_TIMEOUT_MS) || 300000,
+            maxBuffer: 16 * 1024 * 1024,
         }, (err, stdout, stderr) => {
-            if (err && !stdout) return reject(new Error('claude: ' + (stderr || err.message)));
+            if (err && !stdout) {
+                // Timeout (execFile mata el proceso): mensaje claro en vez de "Command failed".
+                if (err.killed || err.signal) return reject(new Error('el turno tardó demasiado (timeout). Prueba con una petición más concreta.'));
+                return reject(new Error('claude: ' + (stderr || err.message)));
+            }
             try {
                 const env = JSON.parse(stdout);
                 if (env.is_error) return reject(new Error(env.result || 'error del modelo'));
