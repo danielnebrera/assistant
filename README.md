@@ -114,6 +114,7 @@ proyectos, se actualiza por `git pull` de este repo, y opera bajo una frontera d
 | `ASSISTANT_SPEC.md` | Cómo trabaja el asistente (su rol, su frontera, sus reglas). |
 | `COMMON_MODULE_SPEC_GENERAL.md` | Metodología de un módulo genérico (estructura + Regla de Oro). |
 | `COMMON_MODULE_SPEC_MAIN.md` | Metodología del módulo `main` (la UI, sin BD). |
+| `DEPLOY.md` | Despliegue y migraciones: `tools/migrate.js` (migraciones de BD) y `tools/deploy-to-pro.sh` (promoción a producción). |
 | `app/<modulo>/SPEC.md` | (En cada proyecto) el contrato concreto de cada módulo del cliente. |
 
 Los tres `*_SPEC.md` son **PROMPT inmutable**: se inyectan en el asistente en cada cambio y
