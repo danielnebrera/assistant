@@ -85,9 +85,9 @@ exports.submit = async (req, res) => {
         return fail('Tu usuario no tiene acceso al asistente');
 
     const token = auth.sign({ user_name, user_id, permissions });
-    // Mismos atributos que la cookie que pone la app (main/controllers/users.js),
-    // para que ambos procesos compartan exactamente la misma sesión.
-    res.cookie('token', token, { maxAge: 90000000, httpOnly: true });
+    // Sesión persistente: cookie de larga duración (~10 años). El gate la renueva en
+    // cada request y el logout la borra, así que la sesión no caduca salvo logout.
+    res.cookie('token', token, { maxAge: auth.SESSION_COOKIE_MAX_AGE, httpOnly: true });
     res.redirect(next);
 };
 

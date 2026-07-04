@@ -41,6 +41,10 @@ function gate(req, res, next) {
         return res.status(403).send('Acceso denegado');
     }
     req.user = user;
+    // Sesión persistente: renovamos la cookie en cada request (deslizante), así no
+    // caduca nunca mientras se use, y una cookie de 25h emitida por el login de la
+    // `app` se convierte en persistente al primer acceso. El logout la borra.
+    res.cookie('token', token, { maxAge: auth.SESSION_COOKIE_MAX_AGE, httpOnly: true });
     next();
 }
 
