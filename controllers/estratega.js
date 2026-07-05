@@ -129,32 +129,31 @@ function buildPrompt({ task, messages, mods, agentStates }) {
     ].join('\n');
 }
 
-// Llama al CLI claude en modo print y devuelve el texto de `.result`.
-function runClaude(prompt) {
-    return new Promise((resolve, reject) => {
-        const args = ['-p', '--output-format', 'json', '--model', MODEL,
-            '--allowed-tools', ...READ_TOOLS];   // solo lectura: Read/Grep/Glob (sin Edit/Write/Bash)
-        const child = execFile(CLAUDE_BIN, args, {
-            cwd: WORK_DIR,                        // lee el proyecto real, en solo lectura
-            env: { ...process.env, HOME: HOME_DIR },
-            // El turno ahora usa herramientas (lee código/BD): más margen que los 120s originales.
-            timeout: Number(process.env.ESTRATEGA_TIMEOUT_MS) || 300000,
-            maxBuffer: 16 * 1024 * 1024,
-        }, (err, stdout, stderr) => {
-            if (err && !stdout) {
-                // Timeout (execFile mata el proceso): mensaje claro en vez de "Command failed".
-                if (err.killed || err.signal) return reject(new Error('el turno tardó demasiado (timeout). Prueba con una petición más concreta.'));
-                return reject(new Error('claude: ' + (stderr || err.message)));
-            }
-            try {
-                const env = JSON.parse(stdout);
-                if (env.is_error) return reject(new Error(env.result || 'error del modelo'));
-                resolve(String(env.result || ''));
-            } catch (e) { reject(new Error('respuesta no parseable: ' + e.message)); }
-        });
-        child.stdin.write(prompt);
-        child.stdin.end();
+// ── Inferencia a través de la capa provider-agnóstica (llm/) ────────────────
+// Antes esto era execFile('claude', ['-p', …]) inline. Ahora pasa por un
+// LLMProvider elegido por `LLM_PROVIDER` (.env). Por defecto `claude_cli`:
+// comportamiento IDÉNTICO al de hoy (usa el binario `claude` con las mismas
+// tools de lectura y el mismo modelo), pero ya intercambiable por Anthropic /
+// OpenAI / local sin tocar este controlador. Ver assistant/LLM_ARCHITECTURE.md.
+const { getProvider } = require('../llm/registry');
+let _provider = null;
+function provider() {
+    if (!_provider) _provider = getProvider({
+        model: MODEL,                 // 'sonnet' (ESTRATEGA_MODEL) por defecto
+        allowedTools: READ_TOOLS,     // solo aplica al shim claude_cli (lectura: Read/Grep/Glob/mysql)
+        cwd: WORK_DIR,                // lee el proyecto real, en solo lectura
+        timeoutMs: Number(process.env.ESTRATEGA_TIMEOUT_MS) || 300000,
     });
+    return _provider;
+}
+
+// Un turno de inferencia del Estratega. Con el shim claude_cli, `system` = el
+// prompt completo y `messages` vacío → flatten() lo pasa VERBATIM al `claude -p`
+// (byte-idéntico al camino anterior). Al migrar a un provider real (Anthropic/
+// OpenAI) se repartirá en system + messages y se usará el bucle propio (llm/loop).
+async function runClaude(prompt) {
+    const res = await provider().step({ system: prompt, messages: [] });
+    return res.text;
 }
 
 // Extrae el primer objeto JSON del texto (el modelo a veces lo envuelve).
