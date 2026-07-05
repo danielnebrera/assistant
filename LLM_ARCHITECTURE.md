@@ -83,22 +83,40 @@ En código no cambia nada: `const provider = getProvider();` y se lo pasas a
 `runAgent` / `runStrategistTurn` / `runModuleAgent`. Por defecto (`claude_cli`)
 arranca **hoy** sin claves usando la auth del `claude` instalado.
 
-## Qué NO se ha hecho (a propósito, decisión de seguridad)
+## Estado del cutover
 
-Es una **base adoptable**, no un corte en caliente. Mientras dormías no toqué el
-runtime en marcha ni reinicié nada. Pendiente de decisión/adopción:
+**Hecho y EN VIVO:**
+- ✅ **Inferencia del Estratega** por `LLMProvider` (`estratega.js` → `runClaude` usa
+  `getProvider()`). Por defecto `claude_cli` = byte-idéntico. Validado end-to-end con
+  un turno real (`"OK"` en ~3s). Cubre `respond`/`supervise`/`planAndLaunch`.
+- ✅ **Tabla del bus** `assistant_message` creada en `factory_assistant`.
 
-1. **Cutover del runtime en vivo**: sustituir en `api.js`/`estratega.js`/`agents.js`
-   las llamadas al CLI por estos runtimes. Recomendado tras un `LLM_PROVIDER=claude_cli`
-   de rodaje y luego `anthropic`.
-2. **Migración del bus**: crear `assistant_message` en `factory_assistant`
-   (`schema.sql` o `ensureMessageSchema`) y cablear `api.js` para leer/escribir del bus
-   en vez de tmux.
-3. **Cap de concurrencia + backpressure** para las sesiones de agente (hoy no hay).
-4. **Supervisión por eventos**: enganchar `onEvent` a la UI en vez del `POST /supervise`
-   por temporizador.
-5. **Tests de integración con BD** para `message_bus` (los actuales cubren la lógica
-   pura con `query` inyectado; no tocan `factory_assistant`).
+**Construido, detrás de flag (listo para activar):**
+- ✅ **Agentes de módulo IN-PROCESS** (`orchestrator/inproc_agents.js`), tmux-free,
+  con el bucle propio + tools confinadas + bus. Se activa con `AGENT_RUNTIME=inproc`
+  (por defecto = tmux, sin cambios). Validado con el `fake` (escribe ficheros reales
+  por el bucle, veto de confinamiento, publica en el bus). **Para trabajo real de
+  módulo necesita un provider fino** (`LLM_PROVIDER=anthropic`/`openai` + clave):
+  con `claude_cli` el bucle degrada a una respuesta de texto.
+
+**Activar el runtime in-process (cuando pongas clave):**
+```
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=...
+AGENT_RUNTIME=inproc
+```
+y `pm2 restart Factory-assistant`. Para volver a tmux: quita `AGENT_RUNTIME` y reinicia.
+
+**Pendiente:**
+1. **Activación real** del runtime in-process con un provider fino (clave de API).
+2. **Eventos → UI**: `agentStates` ya sirve el tail in-process; falta un feed
+   estructurado en `claude_code.ejs` (en vez del pane de terminal).
+3. **Semántica de `enviar`/`parar`/`hard_kill`** para agentes in-process (hoy run-to-
+   completion; esas acciones degradan con gracia). Cancelación cooperativa en el bucle.
+4. **Cap de concurrencia + backpressure** para las sesiones de agente (hoy no hay).
+5. **Supervisión por eventos** (enganchar `onEvent` en vez del `POST /supervise` por timer).
+6. **Retirar tmux para los agentes orquestados** (mantenerlo solo para el terminal humano).
+7. **Tests de integración con BD** para `message_bus` (los actuales cubren la lógica pura).
 
 ## Verificación
 
