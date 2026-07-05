@@ -138,6 +138,12 @@ async function planAndLaunch(taskId) {
 // TRABAJANDO en ese módulo, no abre otro. Reutilizable por planAndLaunch y por la
 // acción "abrir" del Estratega (corrección: añadir un módulo sin replanificar todo).
 async function launchModule(taskId, moduleName, brief) {
+    // Cutover tras flag: con AGENT_RUNTIME=inproc los agentes corren EN-PROCESO
+    // (mi bucle + tools + provider intercambiable, sin tmux). Por defecto (sin
+    // flag) sigue el camino tmux de siempre. Ver orchestrator/inproc_agents.js.
+    if (process.env.AGENT_RUNTIME === 'inproc') {
+        return require('../orchestrator/inproc_agents').launch(taskId, moduleName, brief);
+    }
     const running = await db.query(
         `SELECT a.id FROM ${db.t('assistant_agent')} a LEFT JOIN ${db.t('assistant_module')} m ON m.id=a.module_id
           WHERE a.task_id=? AND a.kind='modulo' AND m.name=? AND a.status='running'`, [taskId, moduleName]);
@@ -190,6 +196,7 @@ async function syncStatuses(taskId) {
         `SELECT id, tmux_name, status FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo'`, [taskId]);
     for (const a of rows) {
         if (!a.tmux_name) continue;
+        if (a.tmux_name.startsWith('inproc:')) continue;   // in-process: su estado lo gestiona el runtime, no tmux
         const alive = await tmux.exists(a.tmux_name);
         const st = alive ? 'running' : 'exited';
         if (st !== a.status) await db.query(`UPDATE ${db.t('assistant_agent')} SET status=? WHERE id=?`, [st, a.id]);
@@ -388,7 +395,9 @@ async function agentStates(taskId, tailLines = 30) {
     const out = [];
     for (const r of rows) {
         let tail = '';
-        if (r.tmux_name && r.status === 'running' && await tmux.exists(r.tmux_name)) {
+        if (r.tmux_name && r.tmux_name.startsWith('inproc:')) {
+            tail = require('../orchestrator/inproc_agents').tailFor(r.id, tailLines);   // log en vivo in-process (sin pane que capturar)
+        } else if (r.tmux_name && r.status === 'running' && await tmux.exists(r.tmux_name)) {
             const pane = await tmux.capture(r.tmux_name);
             tail = (pane || '').split('\n').map(l => l.replace(/\s+$/, '')).filter(Boolean).slice(-tailLines).join('\n');
         }
