@@ -349,6 +349,7 @@ async function sendToAgent(taskId, agentId, text) {
 async function softStopAgent(taskId, agentId) {
     const a = await agentOfTask(taskId, agentId);
     if (!a) throw new Error('Agente no encontrado');
+    if (a.tmux_name && a.tmux_name.startsWith('inproc:')) return require('../orchestrator/inproc_agents').stop(agentId);
     if (!a.tmux_name || !(await tmux.exists(a.tmux_name))) return { ok: false, alive: false };
     await tmux.interrupt(a.tmux_name);
     await sleep(400);
@@ -363,6 +364,7 @@ async function softStopAgent(taskId, agentId) {
 async function hardKillAgent(taskId, agentId) {
     const a = await agentOfTask(taskId, agentId);
     if (!a) throw new Error('Agente no encontrado');
+    if (a.tmux_name && a.tmux_name.startsWith('inproc:')) return require('../orchestrator/inproc_agents').stop(agentId);
     let killed = true;
     if (a.tmux_name) {
         await tmux.kill(a.tmux_name);

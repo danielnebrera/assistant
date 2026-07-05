@@ -9,22 +9,28 @@
 // ║  Se activa con AGENT_RUNTIME=inproc. Por defecto (sin flag) NO se usa:      ║
 // ║  el sistema sigue con tmux exactamente igual que hoy.                      ║
 // ║                                                                            ║
-// ║  Nota: modelo run-to-completion (cada brief se ejecuta hasta terminar);    ║
-// ║  no hay "enviar" mid-run como en tmux. Con LLM_PROVIDER=claude_cli el bucle ║
-// ║  degrada a una respuesta de texto (el CLI hace su propio bucle) → para el  ║
-// ║  trabajo real de módulo hace falta un provider fino (anthropic/openai).    ║
+// ║  - Concurrencia acotada (INPROC_MAX_CONCURRENCY, por defecto 4).            ║
+// ║  - Cancelación cooperativa (AbortController) → parar/hard_kill funcionan    ║
+// ║    sin tmux (el bucle comprueba el signal entre pasos).                     ║
+// ║  Nota: run-to-completion (no hay "enviar" mid-run como en tmux). Con        ║
+// ║  LLM_PROVIDER=claude_cli el bucle degrada a texto; el trabajo real de       ║
+// ║  módulo necesita un provider fino (anthropic/openai).                       ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 const path = require('path');
 const db = require('../lib/db');
 const { getProvider } = require('../llm/registry');
 const { runModuleAgent } = require('./agent_runtime');
 const { createMessageBus, ensureMessageSchema } = require('./message_bus');
+const { createLimiter } = require('../llm/limit');
 
 const WORK_DIR = process.env.CLAUDE_WORK_DIR || path.join(__dirname, '..', '..');
 const MODULES_REL = process.env.MODULES_DIR || '.';   // .env: MODULES_DIR=. (módulos cuelgan de WORK_DIR)
 
 // Buffer de actividad en vivo por agente (sustituye al capture-pane de tmux).
 const buffers = new Map();
+const controllers = new Map();   // agentId -> AbortController (para parar/hard_kill)
+const limiter = createLimiter(Number(process.env.INPROC_MAX_CONCURRENCY) || 4);
+
 function pushLine(agentId, line) {
     const b = buffers.get(agentId) || [];
     b.push(line);
@@ -44,6 +50,7 @@ function formatEvent(e) {
         case 'tool_result': return `← ${String(e.content).split('\n')[0].slice(0, 120)}${e.isError ? ' [error]' : ''}`;
         case 'assistant_message': return e.text ? `« ${e.text.slice(0, 120)}` : null;
         case 'done': return `✓ ${String(e.text).slice(0, 160)}`;
+        case 'aborted': return '■ detenido';
         case 'max_steps': return '⚠ tope de pasos alcanzado';
         default: return null;
     }
@@ -75,22 +82,41 @@ async function launch(taskId, moduleName, brief) {
     await ensureMessageSchema(db.query, db.t).catch(() => {});
 
     const moduleDir = path.join(WORK_DIR, MODULES_REL, moduleName);
+    const controller = new AbortController();
+    controllers.set(agentId, controller);
     pushLine(agentId, `▶ agente ${moduleName} (in-process)`);
 
-    // Fire-and-forget (como el arranque de tmux): la petición del Estratega no se bloquea.
-    runModuleAgent({
+    // Encolado en el limitador (backpressure) + fire-and-forget (como el arranque tmux).
+    limiter.run(() => runModuleAgent({
         provider: getProvider(), moduleName, moduleDir, brief, definition, readOnly: false,
-        bus: bus(), taskId,
+        bus: bus(), taskId, signal: controller.signal,
         onEvent: (e) => { const l = formatEvent(e); if (l) pushLine(agentId, l); },
-    }).then(async (res) => {
-        pushLine(agentId, `✓ ${String(res.summary).slice(0, 160)}`);
-        await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]).catch(() => {});
+    })).then(async (res) => {
+        pushLine(agentId, res.stoppedBy === 'aborted' ? '■ detenido' : `✓ ${String(res.summary).slice(0, 160)}`);
+        finish(agentId);
     }).catch(async (e) => {
         pushLine(agentId, `ERROR: ${e.message}`);
-        await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]).catch(() => {});
+        finish(agentId);
     });
 
     return { agentId, module: moduleName, ok: true };
 }
 
-module.exports = { launch, tailFor, isInproc, formatEvent, _buffers: buffers };
+async function finish(agentId) {
+    controllers.delete(agentId);
+    await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]).catch(() => {});
+}
+
+/**
+ * Para un agente in-process (cancelación cooperativa entre pasos del bucle). Sirve
+ * tanto para "parar" (suave) como para "hard_kill": aborta el signal y marca exited.
+ */
+async function stop(agentId) {
+    const c = controllers.get(agentId);
+    if (c) c.abort();
+    pushLine(agentId, '■ detenido (abort)');
+    await db.query(`UPDATE ${db.t('assistant_agent')} SET status='exited' WHERE id=?`, [agentId]).catch(() => {});
+    return { ok: true, alive: false, killed: true };
+}
+
+module.exports = { launch, stop, tailFor, isInproc, formatEvent, limiter, _buffers: buffers, _controllers: controllers };

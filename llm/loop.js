@@ -37,13 +37,20 @@ const noop = () => {};
 async function runAgent(o) {
     const {
         provider, system = '', tools = [], handlers = {},
-        maxSteps = 12, model, maxTokens, onEvent = noop, ctx = {},
+        maxSteps = 12, model, maxTokens, onEvent = noop, ctx = {}, signal,
     } = o;
     const messages = (o.messages || []).map(m => ({ role: m.role, content: toBlocks(m.content) }));
     const usage = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
 
     while (steps < maxSteps) {
+        // Cancelación cooperativa: entre pasos comprobamos el AbortSignal. Es lo que
+        // permite parar/matar un agente in-process sin tmux (parar entre llamadas).
+        if (signal && signal.aborted) {
+            onEvent({ type: 'aborted', step: steps });
+            const lastA = [...messages].reverse().find(m => m.role === 'assistant');
+            return { messages, text: lastA ? textOf(lastA.content) : '', steps, stoppedBy: 'aborted', usage };
+        }
         steps++;
         onEvent({ type: 'step_start', step: steps });
 

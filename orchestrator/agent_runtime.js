@@ -49,7 +49,7 @@ REGLAS OBLIGATORIAS:
 async function runModuleAgent(o) {
     const {
         provider, moduleName, moduleDir, brief, definition = '', methodology = '',
-        readOnly = false, sqlRunner, maxSteps = 20, onEvent, bus, taskId,
+        readOnly = false, sqlRunner, maxSteps = 20, onEvent, bus, taskId, signal,
     } = o;
     if (!provider || !moduleName || !moduleDir) throw new Error('runModuleAgent: faltan provider/moduleName/moduleDir');
 
@@ -62,7 +62,7 @@ async function runModuleAgent(o) {
     const r = await runAgent({
         provider, system,
         messages: [{ role: 'user', content: brief || 'Realiza tu encargo.' }],
-        tools: defs, handlers, maxSteps, onEvent,
+        tools: defs, handlers, maxSteps, onEvent, signal,
     });
 
     if (bus && taskId) {
