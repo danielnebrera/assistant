@@ -87,8 +87,12 @@ async function launch(taskId, moduleName, brief) {
     pushLine(agentId, `▶ agente ${moduleName} (in-process)`);
 
     // Encolado en el limitador (backpressure) + fire-and-forget (como el arranque tmux).
+    // Provider de los AGENTES, independiente del Estratega: AGENT_LLM_PROVIDER
+    // (si no, cae a LLM_PROVIDER y luego a claude_cli). Así se puede poner los
+    // agentes en anthropic/openai sin cambiar el provider del Estratega.
+    const agentProvider = getProvider(process.env.AGENT_LLM_PROVIDER ? { provider: process.env.AGENT_LLM_PROVIDER } : {});
     limiter.run(() => runModuleAgent({
-        provider: getProvider(), moduleName, moduleDir, brief, definition, readOnly: false,
+        provider: agentProvider, moduleName, moduleDir, brief, definition, readOnly: false,
         bus: bus(), taskId, signal: controller.signal,
         onEvent: (e) => { const l = formatEvent(e); if (l) pushLine(agentId, l); },
     })).then(async (res) => {
