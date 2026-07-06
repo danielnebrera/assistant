@@ -68,4 +68,9 @@ async function getById(id) {
     return rows[0] || null;
 }
 
-module.exports = { discover, sync, list, getById, WORK_DIR };
+async function getByName(name) {
+    const rows = await db.query(`SELECT * FROM ${db.t('assistant_module')} WHERE name=?`, [name]);
+    return rows[0] || null;
+}
+
+module.exports = { discover, sync, list, getById, getByName, WORK_DIR };

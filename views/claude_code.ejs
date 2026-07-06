@@ -69,6 +69,17 @@
     .bub.assistant{align-self:flex-start;background:#16203a;color:#d6e0f0;border-bottom-left-radius:3px}
     .chat-in{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #1a2640;background:#0c1322}
     .chat-in textarea{flex:1;resize:none;background:#0b1120;border:1px solid #243861;border-radius:8px;color:#e6eefc;padding:10px 12px;font-size:13.5px;font-family:inherit;min-height:42px;max-height:120px}
+    /* ── Conversación con el usuario (detalle de tarea): fondo blanco, texto azul marino oscuro ── */
+    .dt-conv{background:#fff;border-color:#d0d9e8}
+    .dt-conv>.ch{background:#f2f5fa;color:#0a2540;border-bottom-color:#d0d9e8}
+    .dt-conv .chat{background:#fff}
+    .dt-conv .bub{color:#0a2540}
+    .dt-conv .bub.assistant{background:#eef2f9;color:#0a2540;border:1px solid #d0d9e8}
+    .dt-conv .bub.user{background:#dbe7fb;color:#0a2540}
+    .dt-conv .bub.work-ind{background:#eef2f9;color:#33507d}
+    .dt-conv .chat .muted{color:#5b6b88}
+    .dt-conv .chat-in{background:#f2f5fa;border-top-color:#d0d9e8}
+    .dt-conv .chat-in textarea{background:#fff;border-color:#c3cfe2;color:#0a2540}
     /* columnas de agentes */
     .agents{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
     .agent{flex:0 0 320px;display:flex;flex-direction:column;background:#0b1120;border:1px solid #1a2640;border-radius:10px;overflow:hidden;min-height:240px}
@@ -112,6 +123,24 @@
     .copy-box .cbh{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #1a2640;color:#cfe0ff;font-size:13px}
     .copy-box textarea{flex:1;width:100%;border:none;resize:none;background:#0b1120;color:#d6e0f0;font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.5;padding:12px 14px}
     .copy-box textarea:focus{outline:none}
+    /* ── Explorador de BD del módulo (tab Módulos) ── */
+    .db-btn{padding:5px 9px;font-size:14px;line-height:1}
+    .db-box{width:min(1100px,96vw);height:min(86vh,780px)}
+    .db-body{flex:1;display:flex;min-height:0}
+    .db-tree{width:240px;flex-shrink:0;border-right:1px solid #1a2640;overflow:auto;padding:8px;background:#0b1120}
+    .db-tree .tnode{padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:#c9d6ee;display:flex;justify-content:space-between;gap:8px;align-items:center}
+    .db-tree .tnode:hover{background:#16203a}
+    .db-tree .tnode.active{background:#1b2c4d;color:#fff}
+    .db-tree .tnode .tn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .db-tree .tnode .cnt{font-size:11px;color:#5b6b88;flex-shrink:0}
+    .db-view{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+    .db-grid-wrap{flex:1;overflow:auto;min-height:0}
+    .db-grid{font-size:12.5px}
+    .db-grid th{position:sticky;top:0;background:#0e1626;z-index:1}
+    .db-grid td{white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,Menlo,monospace}
+    .db-grid tbody tr{cursor:default}
+    .db-pager{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid #1a2640;background:#0c1322;font-size:13px;flex-shrink:0}
+    .db-pager .btn{padding:6px 11px;font-size:12.5px}
     /* ── Móvil vertical: terminal a todo el ancho ── */
     @media (max-width:700px){
       .topbar{gap:10px;padding:0 12px}
@@ -218,8 +247,8 @@
       <div class="wrap">
         <div class="head"><h2>Módulos de la aplicación</h2></div>
         <table>
-          <thead><tr><th>Módulo</th><th>Contrato (SPEC)</th><th>Ruta</th><th>Estado</th></tr></thead>
-          <tbody id="modRows"><tr><td colspan="4" class="muted">Cargando…</td></tr></tbody>
+          <thead><tr><th>Módulo</th><th>BD</th><th>Contrato (SPEC)</th><th>Ruta</th><th>Estado</th></tr></thead>
+          <tbody id="modRows"><tr><td colspan="5" class="muted">Cargando…</td></tr></tbody>
         </table>
         <div class="hint">Cada módulo (o «sección») es una parte independiente de la app. El asistente abre un agente por módulo cuando una tarea lo necesita.</div>
       </div>
@@ -286,6 +315,21 @@
   </div>
 </div>
 
+<!-- Explorador de BD del módulo: árbol de tablas (izq) + rejilla paginada (der) -->
+<div class="copy-ov" id="dbOv" onclick="if(event.target===this)DB.close()">
+  <div class="copy-box db-box">
+    <div class="cbh">
+      <b>🗄️ Base de datos · <span id="dbMod"></span></b>
+      <span style="flex:1"></span>
+      <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="DB.close()">Cerrar ✕</button>
+    </div>
+    <div class="db-body">
+      <aside class="db-tree" id="dbTree"></aside>
+      <div class="db-view" id="dbView"><div class="muted" style="padding:20px">Elige una tabla…</div></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const $ = id => document.getElementById(id);
@@ -310,11 +354,74 @@ const Modules = {
       $('modRows').innerHTML = (modules || []).map(m => `
         <tr style="cursor:default">
           <td><b style="color:#fff">${esc(m.label || m.name)}</b></td>
+          <td><button class="btn ghost db-btn" title="Ver tablas de BD" onclick="DB.open('${esc(m.name)}')">🗄️</button></td>
           <td>${m.has_spec ? '<span class="pill">SPEC.md</span>' : '<span class="muted">— sin contrato —</span>'}</td>
           <td class="muted" style="font-family:monospace;font-size:12px">${esc(m.path)}</td>
           <td>${m.active ? '<span class="badge st-hecho">activo</span>' : '<span class="badge st-pendiente">retirado</span>'}</td>
-        </tr>`).join('') || '<tr><td colspan="4" class="muted">Sin módulos.</td></tr>';
-    } catch(e){ $('modRows').innerHTML = '<tr><td colspan="4" class="muted">Error al cargar.</td></tr>'; }
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">Sin módulos.</td></tr>';
+    } catch(e){ $('modRows').innerHTML = '<tr><td colspan="5" class="muted">Error al cargar.</td></tr>'; }
+  }
+};
+
+/* ════════════ Explorador de BD por módulo ════════════ */
+const DB = {
+  mod:null, table:null, limit:10, offset:0, total:0,
+  async open(name){
+    this.mod = name; this.table = null; this.offset = 0;
+    $('dbMod').textContent = name;
+    $('dbView').innerHTML = '<div class="muted" style="padding:20px">Elige una tabla…</div>';
+    $('dbTree').innerHTML = '<div class="muted" style="padding:10px">Cargando…</div>';
+    $('dbOv').classList.add('on');
+    try {
+      const r = await fetch('/assistant/api/modules/' + encodeURIComponent(name) + '/tables');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Error');
+      const tabs = d.tables || [];
+      $('dbTree').innerHTML = tabs.length
+        ? tabs.map(t => `<div class="tnode" data-t="${esc(t.name)}" onclick="DB.openTable('${esc(t.name)}')">
+             <span class="tn">🗃 ${esc(t.name)}</span><span class="cnt">${t.rows == null ? '' : '~' + t.rows}</span></div>`).join('')
+        : '<div class="muted" style="padding:10px">Este módulo no tiene tablas.</div>';
+    } catch(e){ $('dbTree').innerHTML = '<div class="muted" style="padding:10px">Error al cargar tablas.</div>'; }
+  },
+  close(){ $('dbOv').classList.remove('on'); },
+  async openTable(t, offset){
+    this.table = t; this.offset = offset || 0;
+    document.querySelectorAll('#dbTree .tnode').forEach(n => n.classList.toggle('active', n.dataset.t === t));
+    $('dbView').innerHTML = '<div class="muted" style="padding:20px">Cargando…</div>';
+    try {
+      const url = '/assistant/api/modules/' + encodeURIComponent(this.mod) + '/tables/' + encodeURIComponent(t)
+                + '?offset=' + this.offset + '&limit=' + this.limit;
+      const r = await fetch(url);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Error');
+      DB.render(d);
+    } catch(e){ $('dbView').innerHTML = '<div class="muted" style="padding:20px">Error: ' + esc(e.message) + '</div>'; }
+  },
+  render(d){
+    this.total = d.total; this.offset = d.offset; this.limit = d.limit;
+    const head = '<tr>' + d.columns.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+    const body = d.rows.length
+      ? d.rows.map(row => '<tr>' + d.columns.map(c => {
+          const v = row[c];
+          if (v === null || v === undefined) return '<td><span class="muted">NULL</span></td>';
+          const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          return `<td title="${esc(s)}">${esc(s)}</td>`;
+        }).join('') + '</tr>').join('')
+      : `<tr><td colspan="${d.columns.length || 1}" class="muted" style="padding:16px">Sin filas.</td></tr>`;
+    const from = d.total ? d.offset + 1 : 0;
+    const to   = Math.min(d.offset + d.limit, d.total);
+    const lastOff = d.total ? Math.floor((d.total - 1) / d.limit) * d.limit : 0;
+    const canPrev = d.offset > 0;
+    const canNext = d.offset + d.limit < d.total;
+    $('dbView').innerHTML =
+      `<div class="db-grid-wrap"><table class="db-grid"><thead>${head}</thead><tbody>${body}</tbody></table></div>
+       <div class="db-pager">
+         <button class="btn ghost" ${canPrev ? '' : 'disabled'} title="Primera página" onclick="DB.openTable(DB.table, 0)">« Primera</button>
+         <button class="btn ghost" ${canPrev ? '' : 'disabled'} title="Anterior" onclick="DB.openTable(DB.table, ${Math.max(0, d.offset - d.limit)})">‹ Anterior</button>
+         <span style="flex:1;text-align:center;color:#8ea3c4">${from}–${to} de ${d.total}</span>
+         <button class="btn ghost" ${canNext ? '' : 'disabled'} title="Siguiente" onclick="DB.openTable(DB.table, ${d.offset + d.limit})">Siguiente ›</button>
+         <button class="btn ghost" ${canNext ? '' : 'disabled'} title="Última página" onclick="DB.openTable(DB.table, ${lastOff})">Última »</button>
+       </div>`;
   }
 };
 

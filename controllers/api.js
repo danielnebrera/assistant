@@ -8,6 +8,7 @@ const modules   = require('./modules_store');
 const tasks     = require('./tasks_store');
 const estratega = require('./estratega');
 const agents    = require('./agents');
+const dbBrowser = require('./db_browser');
 
 const wrap = (fn) => (req, res) =>
     Promise.resolve(fn(req, res)).catch(err => {
@@ -48,6 +49,24 @@ function summarizeActions(executed) {
 /* ── Módulos ─────────────────────────────────────────────────────────────── */
 router.get('/modules', wrap(async (req, res) => {
     res.json({ modules: await modules.list() });
+}));
+
+// Árbol de tablas de BD del módulo (solo las que existen, con nº aprox. de filas).
+router.get('/modules/:name/tables', wrap(async (req, res) => {
+    const t = await dbBrowser.tables(req.params.name);
+    if (t === null) return res.status(404).json({ error: 'Módulo no encontrado' });
+    res.json({ tables: t });
+}));
+
+// Una página (columnas + filas + total) de una tabla del módulo. ?offset=&limit=
+router.get('/modules/:name/tables/:table', wrap(async (req, res) => {
+    try {
+        const data = await dbBrowser.read(req.params.name, req.params.table, req.query.offset, req.query.limit);
+        res.json(data);
+    } catch (err) {
+        if (err.status) return res.status(err.status).json({ error: err.message });
+        throw err;
+    }
 }));
 
 /* ── Tareas ──────────────────────────────────────────────────────────────── */
