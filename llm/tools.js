@@ -112,6 +112,11 @@ function buildDefaultTools({ root, sqlRunner, readOnly = true } = {}) {
         defs.push({ name: 'write_file', description: 'Escribe/crea un fichero (SOLO dentro de la carpeta del módulo).',
             parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } });
         handlers.write_file = async ({ path: p, content }) => {
+            // Robustez: si el contenido no llegó (p.ej. tool_use truncado por max_tokens),
+            // devolvemos un error legible para que el modelo REINTENTE, en vez de reventar.
+            if (typeof content !== 'string') {
+                throw new Error('falta el parámetro "content" (texto del fichero). Vuelve a llamar a write_file con el contenido COMPLETO; si es muy largo, escríbelo por partes.');
+            }
             const abs = resolveWithin(root, p);       // ← veto del guardián, agnóstico de la IA
             await fsp.mkdir(path.dirname(abs), { recursive: true });
             await fsp.writeFile(abs, content, 'utf8');
