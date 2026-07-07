@@ -136,24 +136,55 @@ function buildPrompt({ task, messages, mods, agentStates }) {
 // tools de lectura y el mismo modelo), pero ya intercambiable por Anthropic /
 // OpenAI / local sin tocar este controlador. Ver assistant/LLM_ARCHITECTURE.md.
 const { getProvider } = require('../llm/registry');
+// Motor del Estratega elegido por ESTRATEGA_LLM_PROVIDER (default 'claude_cli' =
+// comportamiento de hoy). Con 'anthropic' el turno va por la API + nuestro bucle
+// (rápido, sin arranque en frío del CLI). Solo afecta al Estratega; los agentes de
+// tmux no cambian. La clave va en ESTRATEGA_ANTHROPIC_KEY (aislada) para NO filtrarla
+// al `claude` de los agentes (que heredan el entorno) y que sigan con tu login.
+const ESTRATEGA_PROVIDER = process.env.ESTRATEGA_LLM_PROVIDER || 'claude_cli';
 let _provider = null;
 function provider() {
-    if (!_provider) _provider = getProvider({
-        model: MODEL,                 // 'sonnet' (ESTRATEGA_MODEL) por defecto
-        allowedTools: READ_TOOLS,     // solo aplica al shim claude_cli (lectura: Read/Grep/Glob/mysql)
-        cwd: WORK_DIR,                // lee el proyecto real, en solo lectura
-        timeoutMs: Number(process.env.ESTRATEGA_TIMEOUT_MS) || 300000,
-    });
+    if (_provider) return _provider;
+    const opts = { provider: ESTRATEGA_PROVIDER, cwd: WORK_DIR, timeoutMs: Number(process.env.ESTRATEGA_TIMEOUT_MS) || 300000 };
+    if (ESTRATEGA_PROVIDER === 'claude_cli') {
+        opts.model = MODEL;               // alias 'sonnet' válido para el CLI
+        opts.allowedTools = READ_TOOLS;   // Read/Grep/Glob/mysql vía el propio CLI
+    } else {
+        opts.apiKey = process.env.ESTRATEGA_ANTHROPIC_KEY || process.env.ANTHROPIC_API_KEY;   // clave aislada
+        // model por defecto del adaptador (id completo, p.ej. claude-sonnet-4-6) o LLM_MODEL
+    }
+    _provider = getProvider(opts);
     return _provider;
 }
 
-// Un turno de inferencia del Estratega. Con el shim claude_cli, `system` = el
-// prompt completo y `messages` vacío → flatten() lo pasa VERBATIM al `claude -p`
-// (byte-idéntico al camino anterior). Al migrar a un provider real (Anthropic/
-// OpenAI) se repartirá en system + messages y se usará el bucle propio (llm/loop).
+// Herramientas de SOLO LECTURA para el bucle del Estratega cuando va por API
+// (lectura de código/specs). El SQL de solo-lectura queda fuera por ahora: el
+// usuario assistant_ro no valida (ruta rota, a arreglar aparte) — no es regresión.
+let _tools = null;
+function estrategaTools() {
+    if (!_tools) { const { buildDefaultTools } = require('../llm/tools'); _tools = buildDefaultTools({ root: WORK_DIR, readOnly: true }); }
+    return _tools;
+}
+
+// Un turno de inferencia del Estratega.
+//  - claude_cli: `system` = prompt completo, `messages` vacío → flatten() lo pasa
+//    VERBATIM al `claude -p` (byte-idéntico al camino anterior).
+//  - provider fino (API): usamos NUESTRO bucle (llm/loop) con tools de lectura, así el
+//    turno es de segundos (sin cold-start del CLI). Devuelve texto → parseReply igual.
 async function runClaude(prompt) {
-    const res = await provider().step({ system: prompt, messages: [] });
-    return res.text;
+    const p = provider();
+    if (p.name === 'claude_cli') {
+        const res = await p.step({ system: prompt, messages: [] });
+        return res.text;
+    }
+    const { runAgent } = require('../llm/loop');
+    const { defs, handlers } = estrategaTools();
+    const r = await runAgent({
+        provider: p, system: prompt,
+        messages: [{ role: 'user', content: 'Procede con este turno. Responde EXCLUSIVAMENTE con el objeto JSON indicado, sin texto alrededor.' }],
+        tools: defs, handlers, maxSteps: 8,
+    });
+    return r.text;
 }
 
 // Extrae el primer objeto JSON del texto (el modelo a veces lo envuelve).
