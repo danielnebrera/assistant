@@ -465,6 +465,18 @@ async function executeActions(taskId, actions, onProgress) {
                 const r = await commitTask(taskId);
                 done.push({ op, sha: (r.sha || '').slice(0, 8) });
             } else if (op === 'enviar') {
+                // Runtime aider: los agentes son de UN SOLO USO (terminan y salen). Un
+                // "seguimiento" del usuario NO se puede mandar a un agente muerto → se
+                // lanza un agente NUEVO con esa instrucción + el objetivo de la tarea.
+                // Hay continuidad: el repo ya tiene el commit del agente anterior.
+                if (process.env.AGENT_RUNTIME === 'aider') {
+                    const tk = await tasks.get(taskId);
+                    const ctx = (tk && tk.definition && tk.definition.trim()) ? tk.definition.trim() + '\n\n' : '';
+                    const r = await launchModule(taskId, ac.module, ctx + 'Seguimiento del usuario: ' + (ac.text || ''));
+                    if (r.error) done.push({ op, module: ac.module, error: r.error });
+                    else done.push({ op, module: ac.module, relaunched: !r.skipped });
+                    continue;
+                }
                 const a = await agentByModule(taskId, ac.module);
                 if (!a) { done.push({ op, module: ac.module, error: 'agente no encontrado' }); continue; }
                 await sendToAgent(taskId, a.id, ac.text || '');

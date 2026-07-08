@@ -41,6 +41,7 @@ function summarizeActions(executed) {
         else if (e.op === 'guardar') parts.push('cambios guardados' + (e.sha ? ' (' + e.sha + ')' : ''));
         else if (e.op === 'lanzar' && e.launched) parts.push('desarrollo iniciado: ' + e.launched + ' agente(s)');
         else if (e.op === 'abrir' && e.opened) parts.push('abierto agente de ' + e.module);
+        else if (e.op === 'enviar' && e.relaunched) parts.push('retomo «' + e.module + '» con tu comentario');
         else if (e.op === 'hard_kill' && e.count) parts.push('cerrado' + (e.count > 1 ? 's ' + e.count : '') + ' agente' + (e.count > 1 ? 's' : '') + ' de ' + e.module);
         else if (e.op === 'parar' && e.count) parts.push('parado' + (e.count > 1 ? 's ' + e.count : '') + ' agente' + (e.count > 1 ? 's' : '') + ' de ' + e.module);
     }
