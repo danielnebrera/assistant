@@ -172,6 +172,7 @@ function estrategaTools() {
 //  - provider fino (API): usamos NUESTRO bucle (llm/loop) con tools de lectura, así el
 //    turno es de segundos (sin cold-start del CLI). Devuelve texto → parseReply igual.
 const TURN_TIMEOUT_MS = Number(process.env.ESTRATEGA_TURN_TIMEOUT_MS) || 90000;
+const MAX_STEPS = Number(process.env.ESTRATEGA_MAX_STEPS) || 20;
 
 async function runClaude(prompt, { onEvent, signal } = {}) {
     const p = provider();
@@ -188,18 +189,23 @@ async function runClaude(prompt, { onEvent, signal } = {}) {
     const ac = new AbortController();
     if (signal) signal.addEventListener('abort', () => ac.abort(), { once: true });
     let timer, guardTimer;
+    const base = [{ role: 'user', content: 'Procede con este turno. Responde EXCLUSIVAMENTE con el objeto JSON indicado, sin texto alrededor.' }];
+    const step = (messages, tools, maxSteps) => runAgent({ provider: p, system: prompt, messages, tools, handlers: tools.length ? handlers : {}, maxSteps, onEvent, signal: ac.signal });
     try {
-        const run = runAgent({
-            provider: p, system: prompt,
-            messages: [{ role: 'user', content: 'Procede con este turno. Responde EXCLUSIVAMENTE con el objeto JSON indicado, sin texto alrededor.' }],
-            tools: defs, handlers, maxSteps: 8, onEvent, signal: ac.signal,
-        });
         timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
         const guard = new Promise((_, rej) => {
             guardTimer = setTimeout(() => rej(new Error(`el turno superó ${Math.round(TURN_TIMEOUT_MS / 1000)}s`)), TURN_TIMEOUT_MS + 500);
         });
-        const r = await Promise.race([run, guard]);
+        let r = await Promise.race([step(base, defs, MAX_STEPS), guard]);
         if (r && r.stoppedBy === 'aborted') throw new Error(`el turno superó ${Math.round(TURN_TIMEOUT_MS / 1000)}s`);
+        // Si agotó los pasos explorando SIN converger al JSON, fuerza una respuesta final
+        // SIN herramientas: así SIEMPRE contesta (aunque sea para pedir una aclaración) y
+        // nunca se queda mudo con la última actividad congelada en el panel.
+        if (r && r.stoppedBy === 'max_steps') {
+            const finalMsgs = r.messages.concat([{ role: 'user', content: 'Basta de explorar. Con lo que ya sabes, responde AHORA con el objeto JSON pedido (sin usar más herramientas). Si no localizaste algo, dilo en "reply" y pide la aclaración que necesites.' }]);
+            const r2 = await Promise.race([step(finalMsgs, [], 1), guard]);
+            return r2.text || r.text;
+        }
         return r.text;
     } finally { clearTimeout(timer); clearTimeout(guardTimer); }
 }
