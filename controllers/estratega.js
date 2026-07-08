@@ -172,7 +172,10 @@ function estrategaTools() {
 //  - provider fino (API): usamos NUESTRO bucle (llm/loop) con tools de lectura, así el
 //    turno es de segundos (sin cold-start del CLI). Devuelve texto → parseReply igual.
 const TURN_TIMEOUT_MS = Number(process.env.ESTRATEGA_TURN_TIMEOUT_MS) || 90000;
-const MAX_STEPS = Number(process.env.ESTRATEGA_MAX_STEPS) || 20;
+// El Estratega NO investiga el código a fondo: conversa y decide. La investigación real
+// (localizar dónde tocar) la hacen los scouts del fan-out por módulo → sin doble
+// exploración. Presupuesto corto (la respuesta final forzada evita quedarse mudo).
+const MAX_STEPS = Number(process.env.ESTRATEGA_MAX_STEPS) || 8;
 
 async function runClaude(prompt, { onEvent, signal } = {}) {
     const p = provider();

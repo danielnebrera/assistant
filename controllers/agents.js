@@ -112,7 +112,7 @@ async function planAndLaunch(taskId, onProgress) {
     // Cada módulo conoce su código → más rápido y más fiable que una sola exploración.
     prog(`🔎 preguntando a ${mods.length} módulos si el asunto es suyo…`);
     const { createLimiter } = require('../llm/limit');
-    const limit = createLimiter(Number(process.env.ESTRATEGA_SCOUT_CONCURRENCY) || 6);
+    const limit = createLimiter(Number(process.env.ESTRATEGA_SCOUT_CONCURRENCY) || 10);
     const scouts = await Promise.all(mods.map(m => limit.run(async () => {
         const dir = path.join(WORK_DIR, MODULES_REL, m.name);
         const r = await estratega.scoutModule(m.name, dir, problem).catch(() => ({ name: m.name, relevant: false }));
