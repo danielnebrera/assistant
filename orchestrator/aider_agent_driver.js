@@ -24,7 +24,7 @@ const BUS_EVENTS = { start: 'status', question: 'question', error: 'note' };
  * Ejecuta un agente Aider para una tarea/módulo y cierra el workflow.
  * @returns {Promise<{done, userMessage, events, stderr}>}
  */
-async function runModuleTaskWithAider({ taskId, moduleName, moduleDir, model = 'haiku', brief, files = [], env = {} }) {
+async function runModuleTaskWithAider({ taskId, moduleName, moduleDir, model = 'haiku', brief, files = [], env = {}, onEvent }) {
     await ensureMessageSchema(db.query, db.t).catch(() => {});
     await bus().post({ taskId, sender: 'estratega', recipient: `agent:${moduleName}`, kind: 'instruction', payload: { brief } }).catch(() => {});
 
@@ -33,6 +33,7 @@ async function runModuleTaskWithAider({ taskId, moduleName, moduleDir, model = '
         onEvent: (ev) => {
             const kind = BUS_EVENTS[ev.event];
             if (kind) bus().post({ taskId, sender: `agent:${moduleName}`, recipient: 'estratega', kind, payload: ev }).catch(() => {});
+            if (onEvent) { try { onEvent(ev); } catch (e) { /* no tumbar el bridge */ } }
         },
     });
 

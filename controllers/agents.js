@@ -144,6 +144,11 @@ async function launchModule(taskId, moduleName, brief) {
     if (process.env.AGENT_RUNTIME === 'inproc') {
         return require('../orchestrator/inproc_agents').launch(taskId, moduleName, brief);
     }
+    // AGENT_RUNTIME=aider: runtime agnóstico (Aider+LiteLLM) confinado al módulo, con
+    // cierre de workflow por chat. Ver orchestrator/aider_launch.js.
+    if (process.env.AGENT_RUNTIME === 'aider') {
+        return require('../orchestrator/aider_launch').launch(taskId, moduleName, brief);
+    }
     const running = await db.query(
         `SELECT a.id FROM ${db.t('assistant_agent')} a LEFT JOIN ${db.t('assistant_module')} m ON m.id=a.module_id
           WHERE a.task_id=? AND a.kind='modulo' AND m.name=? AND a.status='running'`, [taskId, moduleName]);
@@ -196,7 +201,7 @@ async function syncStatuses(taskId) {
         `SELECT id, tmux_name, status FROM ${db.t('assistant_agent')} WHERE task_id=? AND kind='modulo'`, [taskId]);
     for (const a of rows) {
         if (!a.tmux_name) continue;
-        if (a.tmux_name.startsWith('inproc:')) continue;   // in-process: su estado lo gestiona el runtime, no tmux
+        if (a.tmux_name.startsWith('inproc:') || a.tmux_name.startsWith('aider:')) continue;   // runtimes propios: su estado lo gestiona el runtime, no tmux
         const alive = await tmux.exists(a.tmux_name);
         const st = alive ? 'running' : 'exited';
         if (st !== a.status) await db.query(`UPDATE ${db.t('assistant_agent')} SET status=? WHERE id=?`, [st, a.id]);
@@ -350,6 +355,7 @@ async function softStopAgent(taskId, agentId) {
     const a = await agentOfTask(taskId, agentId);
     if (!a) throw new Error('Agente no encontrado');
     if (a.tmux_name && a.tmux_name.startsWith('inproc:')) return require('../orchestrator/inproc_agents').stop(agentId);
+    if (a.tmux_name && a.tmux_name.startsWith('aider:')) return require('../orchestrator/aider_launch').stop(agentId);
     if (!a.tmux_name || !(await tmux.exists(a.tmux_name))) return { ok: false, alive: false };
     await tmux.interrupt(a.tmux_name);
     await sleep(400);
@@ -365,6 +371,7 @@ async function hardKillAgent(taskId, agentId) {
     const a = await agentOfTask(taskId, agentId);
     if (!a) throw new Error('Agente no encontrado');
     if (a.tmux_name && a.tmux_name.startsWith('inproc:')) return require('../orchestrator/inproc_agents').stop(agentId);
+    if (a.tmux_name && a.tmux_name.startsWith('aider:')) return require('../orchestrator/aider_launch').stop(agentId);
     let killed = true;
     if (a.tmux_name) {
         await tmux.kill(a.tmux_name);
@@ -399,6 +406,8 @@ async function agentStates(taskId, tailLines = 30) {
         let tail = '';
         if (r.tmux_name && r.tmux_name.startsWith('inproc:')) {
             tail = require('../orchestrator/inproc_agents').tailFor(r.id, tailLines);   // log en vivo in-process (sin pane que capturar)
+        } else if (r.tmux_name && r.tmux_name.startsWith('aider:')) {
+            tail = require('../orchestrator/aider_launch').tailFor(r.id, tailLines);    // log en vivo del runtime Aider
         } else if (r.tmux_name && r.status === 'running' && await tmux.exists(r.tmux_name)) {
             const pane = await tmux.capture(r.tmux_name);
             tail = (pane || '').split('\n').map(l => l.replace(/\s+$/, '')).filter(Boolean).slice(-tailLines).join('\n');
