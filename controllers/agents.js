@@ -100,38 +100,35 @@ Cuando termines, resume en 3 líneas qué has cambiado.`;
 }
 
 // Planifica (turno del Estratega) y lanza un agente por módulo.
-async function planAndLaunch(taskId) {
+async function planAndLaunch(taskId, onProgress) {
     const task = await tasks.get(taskId);
     if (!task) throw new Error('Tarea no encontrada');
-    const [messages, mods] = await Promise.all([tasks.messages(taskId), modules.list()]);
-    const validNames = new Set(mods.filter(m => m.active).map(m => m.name));
+    const mods = (await modules.list()).filter(m => m.active);
+    const problem = (task.definition && task.definition.trim()) ? task.definition : (task.title || '');
+    const prog = typeof onProgress === 'function' ? onProgress : () => {};
 
-    // 1) Plan del Estratega (una sola llamada; parseamos definition + modules).
-    const raw = await estratega.runClaude(planPrompt({ task, messages, mods }));
-    let planned = { definition: '', modules: [] };
-    try {
-        let s = raw.trim();
-        const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) s = fence[1].trim();
-        const a = s.indexOf('{'), b = s.lastIndexOf('}');
-        if (a >= 0 && b > a) s = s.slice(a, b + 1);
-        const o = JSON.parse(s);
-        planned.definition = String(o.definition || '').trim();
-        planned.modules = Array.isArray(o.modules) ? o.modules : [];
-    } catch (e) { throw new Error('No pude interpretar el plan del Estratega. Reintenta.'); }
-    let plan = planned.modules;
-    if (planned.definition) await tasks.setDefinition(taskId, planned.definition);
+    // DESCUBRIMIENTO por fan-out: en vez de adivinar el módulo grepeando todo el repo,
+    // preguntamos a CADA módulo (en paralelo, acotado a su carpeta) si el asunto es suyo.
+    // Cada módulo conoce su código → más rápido y más fiable que una sola exploración.
+    prog(`🔎 preguntando a ${mods.length} módulos si el asunto es suyo…`);
+    const { createLimiter } = require('../llm/limit');
+    const limit = createLimiter(Number(process.env.ESTRATEGA_SCOUT_CONCURRENCY) || 6);
+    const scouts = await Promise.all(mods.map(m => limit.run(async () => {
+        const dir = path.join(WORK_DIR, MODULES_REL, m.name);
+        const r = await estratega.scoutModule(m.name, dir, problem).catch(() => ({ name: m.name, relevant: false }));
+        prog(r.relevant ? `✓ ${m.name}: sí${r.where ? ' (' + r.where + ')' : ''}` : `· ${m.name}: no`);
+        return r;
+    })));
 
-    // Filtra a módulos válidos y deduplica.
-    const seen = new Set();
-    plan = plan.filter(p => p && validNames.has(p.name) && !seen.has(p.name) && seen.add(p.name));
-    if (!plan.length) throw new Error('El Estratega no identificó módulos que tocar. Define mejor la tarea en el chat.');
+    const relevant = scouts.filter(r => r.relevant);
+    if (!relevant.length) throw new Error('Ningún módulo se reconoció responsable del asunto. Afina la definición o dime en qué parte mirar.');
 
-    // 2) Un agente por módulo (idempotente: launchModule salta los que ya trabajan).
+    // Un agente por módulo relevante (idempotente: launchModule salta los que ya trabajan).
     const launched = [];
-    for (const p of plan) launched.push(await launchModule(taskId, p.name, p.brief || ''));
+    for (const r of relevant) launched.push(await launchModule(taskId, r.name, r.brief || problem));
 
     await tasks.setStatus(taskId, 'realizacion');
-    return { launched };
+    return { launched, relevant: relevant.map(r => r.name) };
 }
 
 // Lanza UN agente de módulo para la tarea. IDEMPOTENTE: si ya hay un agente
@@ -442,7 +439,7 @@ async function agentsByModule(taskId, moduleName) {
 // Ejecuta las ACCIONES que decide el Estratega (lanzar / enviar / parar /
 // parar_todos). El Estratega solo DECIDE (texto→JSON); aquí, en código de
 // confianza, se EJECUTAN contra tmux. Devuelve un resumen por acción.
-async function executeActions(taskId, actions) {
+async function executeActions(taskId, actions, onProgress) {
     const done = [];
     if (!Array.isArray(actions)) return done;
     for (const ac of actions) {
@@ -451,8 +448,8 @@ async function executeActions(taskId, actions) {
             if (op === 'lanzar') {
                 // planAndLaunch es idempotente (salta módulos que ya trabajan y abre los
                 // que falten), así que sirve tanto para el arranque como para reabrir.
-                const r = await planAndLaunch(taskId);
-                done.push({ op, launched: (r.launched || []).filter(x => x.ok && !x.skipped).length });
+                const r = await planAndLaunch(taskId, onProgress);
+                done.push({ op, launched: (r.launched || []).filter(x => x.ok && !x.skipped).length, relevant: r.relevant });
             } else if (op === 'abrir') {
                 // Añade UN agente de módulo (corrección: sumar un módulo sin replanificar).
                 const r = await launchModule(taskId, ac.module, ac.brief || '');

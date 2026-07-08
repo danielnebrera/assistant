@@ -210,6 +210,49 @@ async function runClaude(prompt, { onEvent, signal } = {}) {
     } finally { clearTimeout(timer); clearTimeout(guardTimer); }
 }
 
+// ── Scout de módulo: pregunta a UN módulo si el problema es suyo, ACOTADO a su
+//    carpeta (cada módulo conoce su código). Es la pieza del fan-out de descubrimiento
+//    que sustituye a adivinar el módulo grepeando todo el monorepo. ─────────────────
+const SCOUT_TIMEOUT_MS = Number(process.env.ESTRATEGA_SCOUT_TIMEOUT_MS) || 45000;
+
+function parseScout(text) {
+    try {
+        let s = String(text || '').trim();
+        const f = s.match(/```(?:json)?\s*([\s\S]*?)```/i); if (f) s = f[1].trim();
+        const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a >= 0 && b > a) s = s.slice(a, b + 1);
+        const o = JSON.parse(s);
+        return { relevant: !!o.relevant, where: String(o.where || '').trim(), brief: String(o.brief || '').trim() };
+    } catch (e) { return { relevant: false }; }
+}
+
+async function scoutModule(name, dir, problem, { onEvent } = {}) {
+    const p = provider();
+    const { runAgent } = require('../llm/loop');
+    const { buildDefaultTools } = require('../llm/tools');
+    const { defs, handlers } = buildDefaultTools({ root: dir, readOnly: true });   // SOLO su carpeta
+    const system = `Eres el AGENTE del módulo «${name}». SOLO conoces los ficheros de TU carpeta.
+Te consulto si un problema reportado por el usuario se resuelve —total o parcialmente— en TU módulo.
+Explora lo justo con Grep/Read (pocos pasos) y responde SOLO con un objeto JSON, sin texto alrededor:
+{"relevant": true|false, "where": "ficheros/funciones clave (si relevant)", "brief": "qué habría que tocar aquí, 1-2 frases (si relevant)"}
+Sé honesto: si el asunto no vive en tu módulo, responde {"relevant": false}.`;
+    const ac = new AbortController();
+    let t, gt;
+    try {
+        t = setTimeout(() => ac.abort(), SCOUT_TIMEOUT_MS);
+        const guard = new Promise((_, rej) => { gt = setTimeout(() => rej(new Error('scout timeout')), SCOUT_TIMEOUT_MS + 500); });
+        const run = (messages, tools, maxSteps) => runAgent({ provider: p, system, messages, tools, handlers: tools.length ? handlers : {}, maxSteps, onEvent, signal: ac.signal });
+        let r = await Promise.race([run([{ role: 'user', content: problem }], defs, 6), guard]);
+        let text = r.text || '';
+        if (r.stoppedBy === 'max_steps') {   // forzar respuesta final sin herramientas
+            const r2 = await Promise.race([run(r.messages.concat([{ role: 'user', content: 'Responde YA solo con el JSON pedido, sin usar más herramientas.' }]), [], 1), guard]);
+            text = r2.text || text;
+        }
+        return { name, ...parseScout(text) };
+    } catch (e) {
+        return { name, relevant: false, error: e.message };
+    } finally { clearTimeout(t); clearTimeout(gt); }
+}
+
 // Extrae el primer objeto JSON del texto (el modelo a veces lo envuelve).
 function parseReply(text) {
     let s = text.trim();
@@ -306,4 +349,4 @@ async function supervise(taskId, agentStates) {
     return { ok: true, note: out.note, actions: out.actions };
 }
 
-module.exports = { respond, supervise, runClaude, parseReply, MODEL };
+module.exports = { respond, supervise, runClaude, scoutModule, parseReply, MODEL };

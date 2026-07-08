@@ -130,7 +130,9 @@ router.post('/tasks/:id/messages', wrap(async (req, res) => {
     try {
         // onEvent: retransmite en vivo lo que hace el Estratega (leer/grep/pensar).
         const out = await estratega.respond(task.id, states, { onEvent: (ev) => feed.fromLoopEvent(task.id, ev) });
-        const executed = (out && out.actions && out.actions.length) ? await agents.executeActions(task.id, out.actions) : [];
+        const executed = (out && out.actions && out.actions.length)
+            ? await agents.executeActions(task.id, out.actions, (line) => feed.publish(task.id, { kind: 'act', line }))
+            : [];
         const note = summarizeActions(executed);   // feedback de tests/commit/lanzar/errores
         if (note) { await tasks.addMessage(task.id, 'estratega', note); feed.publish(task.id, { kind: 'note', line: note }); }
     } finally { turnInFlight.delete(String(task.id)); feed.endTurn(task.id); }
