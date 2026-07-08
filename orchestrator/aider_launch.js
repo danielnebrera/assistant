@@ -11,6 +11,8 @@
 // ╚══════════════════════════════════════════════════════════════════════════╝
 const path = require('path');
 const db = require('../lib/db');
+const tasks = require('../controllers/tasks_store');
+const { answer } = require('./aider_bridge');
 const { runModuleTaskWithAider } = require('./aider_agent_driver');
 
 const WORK_DIR = process.env.CLAUDE_WORK_DIR || path.join(__dirname, '..', '..');
@@ -20,6 +22,8 @@ const MODEL = process.env.AIDER_AGENT_MODEL || 'sonnet';
 // Buffer de últimas líneas por agente (para el panel; el runtime no tiene pane tmux).
 const buffers = new Map();
 const running = new Set();   // dedupe: `${taskId}:${module}`
+// Agentes bloqueados esperando respuesta a una DUDA: taskId → {agentId, child, module}.
+const waiting = new Map();
 function push(id, line) {
     const b = buffers.get(id) || [];
     b.push(line);
@@ -74,7 +78,19 @@ async function launch(taskId, moduleName, brief) {
     // Fire-and-forget: arranca el agente y devuelve YA. El cierre (chat + estado) llega al terminar.
     runModuleTaskWithAider({
         taskId, moduleName, moduleDir, model: MODEL, brief, files: [], env,
-        onEvent: (ev) => { const l = fmt(ev); if (l) push(agentId, l); },
+        onEvent: (ev, child) => {
+            const l = fmt(ev);
+            if (l) push(agentId, l);
+            if (ev.event === 'question') {
+                // El agente tiene una DUDA: lo marcamos como "esperando" (guardamos su
+                // proceso para responderle por stdin) y avisamos al USUARIO en el chat.
+                waiting.set(String(taskId), { agentId, child, module: moduleName });
+                tasks.addMessage(taskId, 'assistant',
+                    `🟡 Duda del agente «${moduleName}»: ${ev.text}\n\n_Responde en el chat para que continúe._`).catch(() => {});
+            } else if (ev.event === 'done') {
+                waiting.delete(String(taskId));
+            }
+        },
     }).then(finish, finish);
 
     return { agentId, module: moduleName, ok: true, runtime: 'aider' };
@@ -84,4 +100,17 @@ async function launch(taskId, moduleName, brief) {
 function stop(/* agentId */) { return { ok: true, note: 'aider: corre hasta terminar' }; }
 function isAider(name) { return typeof name === 'string' && name.startsWith('aider:'); }
 
-module.exports = { launch, tailFor, stop, isAider };
+// ¿Hay un agente esperando respuesta a una DUDA en esta tarea?
+function isWaiting(taskId) { return waiting.has(String(taskId)); }
+
+// Entrega la respuesta del usuario al agente que esperaba (por su stdin). true si la hubo.
+function answerWaiting(taskId, text) {
+    const w = waiting.get(String(taskId));
+    if (!w) return false;
+    answer(w.child, text);
+    waiting.delete(String(taskId));
+    push(w.agentId, `→ respuesta del usuario: ${String(text).slice(0, 80)}`);
+    return true;
+}
+
+module.exports = { launch, tailFor, stop, isAider, isWaiting, answerWaiting };

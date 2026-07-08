@@ -30,10 +30,10 @@ async function runModuleTaskWithAider({ taskId, moduleName, moduleDir, model = '
 
     const r = await launchAiderAgent({
         moduleDir, model, brief, files, env,
-        onEvent: (ev) => {
+        onEvent: (ev, child) => {
             const kind = BUS_EVENTS[ev.event];
             if (kind) bus().post({ taskId, sender: `agent:${moduleName}`, recipient: 'estratega', kind, payload: ev }).catch(() => {});
-            if (onEvent) { try { onEvent(ev); } catch (e) { /* no tumbar el bridge */ } }
+            if (onEvent) { try { onEvent(ev, child); } catch (e) { /* no tumbar el bridge */ } }
         },
     });
 

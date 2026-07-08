@@ -110,6 +110,16 @@ router.post('/tasks/:id/messages', wrap(async (req, res) => {
     if (task.user_id && task.user_id !== req.user.user_id)
         return res.status(403).json({ error: 'No es tu tarea' });
     await tasks.addMessage(task.id, 'user', content);
+    // Round-trip de DUDAS (runtime aider): si un agente está bloqueado esperando respuesta
+    // a una duda en esta tarea, ESTE mensaje es la respuesta → se la entregamos por stdin y
+    // NO disparamos un turno del Estratega (el mensaje era para el agente, no una instrucción).
+    if (process.env.AGENT_RUNTIME === 'aider' &&
+        require('../orchestrator/aider_launch').answerWaiting(task.id, content)) {
+        await tasks.addMessage(task.id, 'estratega', '↪ Respuesta enviada al agente que preguntaba.');
+        const dq = await tasks.detail(task.id);
+        dq.statuses = tasks.STATUSES; dq.statusLabel = tasks.STATUS_LABEL;
+        return res.json(dq);
+    }
     // Si hay agentes vivos, el Estratega puede además decidir acciones sobre ellos
     // (parar / corregir / parar todos). Le pasamos su estado y ejecutamos lo que decida.
     await agents.syncStatuses(task.id);

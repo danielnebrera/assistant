@@ -35,14 +35,18 @@ ANTHROPIC_API_KEY=... .venv/bin/python runner.py \
 Los **eventos** salen por **fd 3** (canal limpio; stdout/stderr quedan para el ruido
 de Aider). Protocolo:
 ```
-{"event":"start",    "module","model","brief"}
+{"event":"start",    "module","model","brief","repo_prefix"}
 {"event":"assistant","text"}                     # texto del modelo
-{"event":"log"|"error"|"warning", "text"}        # feedback en vivo
-{"event":"question", "kind":"confirm"|"prompt", "text", "default"}   # DUDA a resolver
-{"event":"done",     "ok","committed","commit","files":[...]}       # fin + qué cambió
+{"event":"log"|"error"|"warning", "text"}        # feedback en vivo (incl. confirms auto-sí)
+{"event":"question", "kind":"duda", "text","turn"}       # DUDA del modelo → espera respuesta
+{"event":"violation","files":[...], "reverted"}          # tocó fuera del módulo (revertido)
+{"event":"done", "ok","confined","committed","commit","files":[...]}   # fin + qué cambió
 ```
-En la PoC las dudas se auto-responden (proceder). En producción: `confirm_ask`/
-`prompt_ask` **bloquean** y enrutan la duda al usuario (respuesta por stdin).
+**Round-trip de dudas:** las confirmaciones OPERATIVAS de Aider (añadir fichero, crear,
+commitear) se auto-aprueban y salen como `log`. La DUDA real la levanta el MODELO con una
+línea `DUDA: ...`: el runner la detecta entre turnos, **bloquea leyendo stdin** (el usuario
+responde en el chat → el bridge se lo escribe) y continúa. Timeout de seguridad → sigue con
+su criterio. Config: `AIDER_DUDA_MAX_TURNS` (5), `AIDER_DUDA_TIMEOUT` (600s).
 
 ## Agnóstico de proveedor
 Cambiar de IA = cambiar `--model` + la clave. **Cero cambios de código** (LiteLLM):
@@ -65,7 +69,10 @@ Validado con Claude (haiku), sin tocar el proceso vivo:
   (`orchestrator/aider_agent_driver.js`): eventos → bus `assistant_message` → aviso al
   usuario en el chat.
 - ✅ Confinamiento por módulo (permite dentro, revierte fuera).
+- ✅ Cableado con el Estratega tras flag `AGENT_RUNTIME=aider` (fire-and-forget; el panel
+  muestra su actividad; cierre en el chat).
+- ✅ Round-trip de dudas (`DUDA:` del modelo → chat → respuesta del usuario → stdin → sigue).
 
-Pendiente: cableado con el Estratega detrás de flag (`AGENT_RUNTIME=aider`) para que una
-tarea REAL use este agente; round-trip de dudas (bloquear en `confirm_ask` y responder por
-stdin desde el usuario); demo con GPT (falta `OPENAI_API_KEY`).
+Pendiente: demo con GPT (falta `OPENAI_API_KEY`); robustez ante reinicio del proceso
+(los agentes fire-and-forget no sobreviven a un restart); que el Estratega reaccione al
+cierre (auto-tests) en vez de solo avisar al usuario.

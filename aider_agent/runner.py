@@ -17,7 +17,7 @@ Las respuestas a las dudas llegarían por stdin (una línea JSON). En esta PoC l
 preguntas se auto-responden (proceder) para no bloquear, pero SE EMITEN para probar
 que el hook captura la duda.
 """
-import sys, os, json, argparse, subprocess
+import sys, os, json, argparse, subprocess, re, select
 
 # Canal de eventos DEDICADO (fd 3): el bridge de Node lo lee. Así los eventos no se
 # mezclan con lo que Aider imprima en stdout/stderr (su stream en vivo, banners…).
@@ -57,18 +57,42 @@ class EventIO(InputOutput):
     def ai_output(self, content):
         emit("assistant", text=str(content))
 
-    # --- HOOK de "duda": confirmaciones y preguntas del agente ---
+    # --- confirmaciones OPERATIVAS de Aider (añadir fichero, crear, commitear, correr
+    #     comando…): auto-sí y se registran como log. NO son dudas para el usuario; la
+    #     duda real la levanta el MODELO con una línea 'DUDA:' (ver bucle de turnos). ---
     def confirm_ask(self, question, default="y", subject=None, explicit_yes_required=False, group=None, allow_never=False):
-        emit("question", kind="confirm", text=str(question),
-             subject=(str(subject) if subject else None), default=default)
-        return True   # PoC: proceder. Producción: bloquear y enrutar la duda al usuario.
+        s = str(question) + (f" [{subject}]" if subject else "")
+        emit("log", text=f"[auto-sí] {s}")
+        return True
     def prompt_ask(self, question, default="", subject=None):
-        emit("question", kind="prompt", text=str(question), default=default)
+        emit("log", text=f"[auto:{default}] {question}")
         return default
 
 
 def git(args, cwd):
     return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+
+
+# ── Round-trip de DUDAS ─────────────────────────────────────────────────────
+# El agente emite "DUDA: <pregunta>" (una línea) cuando le falta info. El runner
+# la detecta en la respuesta del modelo, BLOQUEA leyendo stdin (el bridge de Node
+# escribe ahí la respuesta del usuario) y continúa. Timeout de seguridad → sigue solo.
+DUDA_RE = re.compile(r'(?im)^\s*DUDA\s*:\s*(.+?)\s*$')
+
+def extract_duda(text):
+    m = DUDA_RE.search(text or "")
+    return m.group(1).strip() if m else None
+
+def read_answer(timeout):
+    """Bloquea hasta que llegue una línea por stdin o venza el timeout (→ '')."""
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], timeout)
+    except Exception:
+        return ""
+    if r:
+        line = sys.stdin.readline()
+        return (line or "").strip()
+    return ""
 
 
 def main():
@@ -90,6 +114,16 @@ def main():
 
     head_before = git(["rev-parse", "HEAD"], repo_root).stdout.strip()
 
+    DUDA_PROTOCOL = (
+        "Trabajas de forma autónoma. Si te falta información IMPRESCINDIBLE para completar "
+        "la tarea con seguridad, NO adivines ni hagas cambios: responde en UNA única línea "
+        "que empiece por 'DUDA:' con tu pregunta concreta. Si tienes lo necesario, procede "
+        "directamente con los cambios."
+    )
+    MAX_TURNS = int(os.environ.get("AIDER_DUDA_MAX_TURNS", "5"))
+    TIMEOUT = float(os.environ.get("AIDER_DUDA_TIMEOUT", "600"))
+    message = f"{DUDA_PROTOCOL}\n\nTarea a realizar:\n{a.brief}"
+    ok, err = True, None
     try:
         io = EventIO()
         model = Model(a.model)
@@ -98,8 +132,23 @@ def main():
         # dirty_commits=False: NO arrastrar cambios ajenos preexistentes al commit.
         coder = Coder.create(main_model=model, io=io, fnames=fnames,
                              auto_commits=True, dirty_commits=False)
-        coder.run(a.brief)          # ejecuta el encargo y retorna al terminar
-        ok, err = True, None
+        # Bucle de turnos: cada coder.run() devuelve el texto final del modelo; si trae
+        # una DUDA, la enrutamos al usuario y esperamos su respuesta antes de seguir.
+        for turn in range(MAX_TURNS):
+            resp = coder.run(message) or ""      # ejecuta un turno; devuelve su respuesta
+            duda = extract_duda(resp)
+            if not duda:
+                break
+            emit("question", kind="duda", text=duda, turn=turn)
+            ans = read_answer(TIMEOUT)           # BLOQUEA hasta respuesta o timeout
+            if not ans:
+                ans = "No hay respuesta del usuario; procede con tu mejor criterio y supuestos razonables."
+                emit("log", text="(sin respuesta a la duda; el agente continúa con su criterio)")
+            else:
+                emit("log", text="(respuesta a la duda recibida)")
+            message = f"Respuesta del usuario a tu duda: {ans}\n\nContinúa con la tarea."
+        else:
+            emit("warning", text=f"Alcanzado el máximo de {MAX_TURNS} turnos de duda.")
     except Exception as e:
         ok, err = False, f"{type(e).__name__}: {e}"
         log_stderr("RUNNER ERROR:", err)
