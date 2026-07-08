@@ -9,7 +9,10 @@
   <style>
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:#0b0f17;color:#d6e0f0;font-family:"Segoe UI",Arial,sans-serif}
-    .app{display:flex;flex-direction:column;height:100vh}
+    /* En móvil, 100vh = altura CON la barra de direcciones oculta (más alta que lo
+       visible) → el TUI se dibuja por debajo del pliegue. 100dvh = altura realmente
+       visible; el navegador que la entienda pisa el 100vh de reserva. */
+    .app{display:flex;flex-direction:column;height:100vh;height:100dvh}
     /* ── barra de marca + tabs ── */
     .topbar{display:flex;align-items:center;gap:18px;height:48px;padding:0 18px;background:#0e1422;border-bottom:1px solid #1d2740;flex-shrink:0}
     .brand{font-size:16px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
@@ -447,7 +450,7 @@ const Tasks = {
     } catch(e){ $('taskRows').innerHTML = '<tr><td colspan="4" class="muted">Error al cargar.</td></tr>'; }
   },
 
-  showList(){ Sup.stop(); AgentLogs.reset(); Tasks.current = null; $('taskList').style.display = ''; $('taskDetail').style.display = 'none'; },
+  showList(){ Sup.stop(); AgentLogs.reset(); EstFeed.close(); Tasks.current = null; $('taskList').style.display = ''; $('taskDetail').style.display = 'none'; },
   showDetail(){ $('taskList').style.display = 'none'; $('taskDetail').style.display = 'flex'; },
 
   async create(){
@@ -460,7 +463,7 @@ const Tasks = {
 
   async open(id){
     if (Tasks.current !== id){ AgentLogs.reset(); $('dtAgents').dataset.sig = ''; }
-    Tasks.current = id; Tasks.showDetail();
+    Tasks.current = id; Tasks.showDetail(); EstFeed.open(id);
     const r = await fetch('/assistant/api/tasks/' + id);
     if (!r.ok) { alert('No se pudo abrir la tarea'); Tasks.showList(); return; }
     const d = await r.json();
@@ -547,6 +550,7 @@ const Tasks = {
     let html = `<div class="agent strat">
       <div class="ah"><span class="dot-s ${mods.some(a => a.status === 'running') ? 'running' : ''}"></span>Estratega
         <span style="flex:1"></span><span class="tag">Estratega</span></div>
+      <div class="strat-live" id="stratLive"></div>
       <div class="alog strat-log" id="stratLog"><span class="muted">El Estratega reparte el trabajo a los módulos y los supervisa. Aquí verás lo que va haciendo.</span></div>
     </div>`;
     const tb = { passed:'✅ tests', failed:'❌ tests', running:'⏳ tests', none:'' };
@@ -613,6 +617,8 @@ const AgentLogs = {
   },
   connect(){
     if (this._retry){ clearTimeout(this._retry); this._retry = null; }
+    // Desmonta el socket anterior (ver Term.connect): evita reconexiones solapadas.
+    if (this.ws){ try { this.ws.onopen = this.ws.onmessage = this.ws.onerror = this.ws.onclose = null; this.ws.close(); } catch(e){} this.ws = null; }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     this.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
     // onopen re-engancha TODAS las columnas (agent_attach): vale tanto para la
@@ -629,13 +635,15 @@ const AgentLogs = {
   _stopHB(){ if (this._hb){ clearInterval(this._hb); this._hb = null; } },
   _tick(){
     if (!this.ws || this.ws.readyState !== 1) return;
+    // Ver Term._tick: en segundo plano no forzamos cierre (evita el churn de idle).
+    if (document.hidden) return;
     if (Date.now() - this._lastRx > 40000){ try { this.ws.close(); } catch(e){} return; }
     this.send({ type:'ping' });
   },
   wake(){
     if (!this.cols.size) return;
     const rs = this.ws ? this.ws.readyState : 3;
-    if (rs === 1) this.send({ type:'ping' });
+    if (rs === 1){ this._lastRx = Date.now(); this.send({ type:'ping' }); }
     else if (rs !== 0) this.connect();
   },
   send(o){ if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); },
@@ -644,6 +652,33 @@ const AgentLogs = {
     else if (m.type === 'exit' || m.type === 'detached'){
       const c = this.byTmux.get(m.sessionId); if (c){ const dot = document.getElementById('agdot-' + c.agentId); if (dot) dot.className = 'dot-s exited'; }
     }
+  }
+};
+/* ════════════ Actividad EN VIVO del Estratega (SSE → columna Estratega) ════════════ */
+const EstFeed = {
+  es:null, taskId:null, lines:[], working:false,
+  open(id){
+    if (this.taskId === id && this.es) return;
+    this.close();
+    this.taskId = id; this.lines = []; this.working = false;
+    try {
+      this.es = new EventSource('/assistant/api/tasks/' + id + '/estratega-stream');
+      this.es.onmessage = ev => { let m; try { m = JSON.parse(ev.data); } catch(e){ return; } EstFeed.handle(m); };
+      this.es.onerror = () => {};   // EventSource reconecta solo
+    } catch(e){}
+  },
+  close(){ if (this.es){ try { this.es.close(); } catch(e){} this.es = null; } this.taskId = null; this.lines = []; this.working = false; this.render(); },
+  handle(m){
+    if (m.kind === 'turn' || m.kind === 'state'){ this.working = !!m.working; if (m.kind === 'turn' && m.working) this.lines = []; }
+    else if (m.line){ this.lines.push(m.line); if (this.lines.length > 60) this.lines.shift(); }
+    this.render();
+  },
+  render(){
+    const el = document.getElementById('stratLive'); if (!el) return;
+    if (!this.working && !this.lines.length){ el.innerHTML = ''; return; }
+    const head = this.working ? '<div class="strat-note" style="opacity:.75">⚙️ Trabajando…</div>' : '';
+    el.innerHTML = head + this.lines.map(l => `<div class="strat-note">${esc(l)}</div>`).join('');
+    el.scrollTop = el.scrollHeight;
   }
 };
 
@@ -694,8 +729,16 @@ const Term = {
       scrollback:5000, theme:{ background:'#0b0f17', foreground:'#d6e0f0' } });
     Term.fit = new FitAddon.FitAddon(); Term.term.loadAddon(Term.fit);
     Term.term.open($('term')); Term.doFit();
+    // Móvil: en el primer pintado la barra de direcciones aún no ha asentado la altura;
+    // re-ajustamos tras un instante para que fit() mida el viewport visible de verdad.
+    setTimeout(() => { if ($('pane-terminal').classList.contains('active')) Term.doFit(); }, 300);
     Term.term.onData(d => { if (Term.current) Term.send({ type:'input', sessionId:Term.current, data:d }); });
     window.addEventListener('resize', () => { if ($('pane-terminal').classList.contains('active')) Term.doFit(); });
+    // La altura visible en móvil cambia al mostrarse/ocultarse la barra de direcciones
+    // o el teclado. visualViewport es la señal fiable en Android (el resize normal no
+    // salta con esos cambios); re-fit para que las filas de abajo del TUI (prompt/
+    // opciones/input) queden dentro de pantalla — la causa real del "no hace scroll".
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if ($('pane-terminal').classList.contains('active')) Term.doFit(); });
 
     // ── Copiar/pegar (Windows) ──────────────────────────────────────────────
     // claude/tmux activan el "modo ratón": para seleccionar con el ratón mantén
@@ -795,6 +838,11 @@ const Term = {
   doFit(){ if(!Term.fit) return; try{ Term.fit.fit(); if(Term.current) Term.send({type:'resize',sessionId:Term.current,cols:Term.term.cols,rows:Term.term.rows}); }catch(e){} },
   connect(){
     if (Term._retry){ clearTimeout(Term._retry); Term._retry = null; }
+    // Desmonta el socket anterior antes de abrir uno nuevo: si quedara vivo (zombi
+    // o reconexión solapada), su onclose dispararía OTRA reconexión y su onmessage
+    // seguiría escribiendo en el mismo terminal → tormenta de reconexiones y
+    // "detached". Anulamos sus handlers para que muera en silencio.
+    if (Term.ws){ try { Term.ws.onopen = Term.ws.onmessage = Term.ws.onerror = Term.ws.onclose = null; Term.ws.close(); } catch(e){} Term.ws = null; }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     Term.ws = new WebSocket(proto + '://' + location.host + '/ws/assistant');
     Term.ws.onopen = () => {
@@ -819,15 +867,21 @@ const Term = {
   _stopHB(){ if (Term._hb){ clearInterval(Term._hb); Term._hb = null; } },
   _tick(){
     if (!Term.ws || Term.ws.readyState !== 1) return;
+    // En segundo plano el navegador estrangula este timer, así que _lastRx
+    // envejece aunque el socket siga vivo (el servidor lo mantiene con sus pings
+    // de protocolo, que el navegador responde solo). NO forzamos cierre estando
+    // ocultos: cerrar aquí provocaba el ciclo caída→reattach→"[Lost TTY]" en cada
+    // idle. Al volver a estar visibles, wake() da un margen fresco y sondea.
+    if (document.hidden) return;
     if (Date.now() - Term._lastRx > 40000){ try { Term.ws.close(); } catch(e){} return; }
     Term.send({ type:'ping' });
   },
   // Al recuperar red o volver a la pestaña: si el socket no está vivo, reconecta ya;
-  // si dice estar OPEN, sondea para descartar que sea un zombi.
+  // si dice estar OPEN, le damos margen fresco y sondeamos (el pong lo confirma).
   wake(){
     if (!Term.inited) return;
     const rs = Term.ws ? Term.ws.readyState : 3;
-    if (rs === 1) Term.send({ type:'ping' });
+    if (rs === 1){ Term._lastRx = Date.now(); Term.send({ type:'ping' }); }
     else if (rs !== 0) Term.connect();
   },
   send(o){ if(Term.ws && Term.ws.readyState===1) Term.ws.send(JSON.stringify(o)); },
@@ -886,11 +940,27 @@ const Term = {
   const sendSeq = seq => { if (Term.current) Term.send({ type:'input', sessionId:Term.current, data:seq }); };
   // Respeta el "application cursor keys mode" (DECCKM): ESC O x vs ESC [ x.
   const arrow = dir => { const app = Term.term && Term.term.modes && Term.term.modes.applicationCursorKeysMode; sendSeq((app ? '\x1bO' : '\x1b[') + dir); };
-  const page  = dir => { if (Term.term) Term.term.scrollLines(dir * Math.max(1, Term.term.rows - 2)); };
+  // ¿La app a pantalla completa (claude) posee el scroll? En alternate-screen NO hay
+  // scrollback en xterm y suele tener modo ratón: su vista se mueve enviándole eventos
+  // de RUEDA del ratón, no con term.scrollLines() (que ahí no tiene nada que desplazar).
+  const appOwnsScroll = () => {
+    const t = Term.term; if (!t) return false;
+    const alt   = t.buffer && t.buffer.active && t.buffer.active.type === 'alternate';
+    const mouse = t.modes && t.modes.mouseTrackingMode && t.modes.mouseTrackingMode !== 'none';
+    return !!(alt || mouse);
+  };
+  // Rueda del ratón, codificación SGR (1006): 64 = arriba, 65 = abajo. n = "clics".
+  const wheel = (up, n) => { const b = up ? 64 : 65; sendSeq(('\x1b[<' + b + ';1;1M').repeat(Math.max(1, n || 3))); };
+  // Exponemos wheel/appOwnsScroll para el gesto táctil de más abajo.
+  window.__termWheel = wheel; window.__termAppScroll = appOwnsScroll;
+  const page = dir => {
+    if (appOwnsScroll()) return wheel(dir < 0, 3);
+    if (Term.term) Term.term.scrollLines(dir * Math.max(1, Term.term.rows - 2));
+  };
   const acts = {
     pageup:   () => page(-1),
     pagedown: () => page(1),
-    bottom:   () => { if (Term.term) Term.term.scrollToBottom(); },
+    bottom:   () => { if (appOwnsScroll()) return wheel(false, 40); if (Term.term) Term.term.scrollToBottom(); },
     up:       () => arrow('A'),
     down:     () => arrow('B'),
     enter:    () => sendSeq('\r'),
@@ -902,6 +972,31 @@ const Term = {
     const b = e.target.closest('button[data-act]'); if (!b) return;
     const f = acts[b.dataset.act]; if (f){ e.preventDefault(); f(); }
   });
+
+  // ── Swipe con el dedo = rueda del ratón cuando la app posee el scroll ──────────
+  // Sin esto, con modo ratón activo xterm manda el gesto como ARRASTRE (selección) y
+  // no scrollea. Capturamos el toque ANTES que xterm (capture:true) y, si es un
+  // desplazamiento vertical claro, lo convertimos en clics de rueda hacia claude.
+  const termEl = $('term'); if (termEl){
+    let y0 = null, acc = 0, active = false;
+    const STEP = 22;   // px de dedo por clic de rueda
+    termEl.addEventListener('touchstart', e => {
+      if (e.touches.length !== 1 || !appOwnsScroll()){ y0 = null; return; }
+      y0 = e.touches[0].clientY; acc = 0; active = false;
+    }, { capture:true, passive:true });
+    termEl.addEventListener('touchmove', e => {
+      if (y0 == null || e.touches.length !== 1) return;
+      const y = e.touches[0].clientY, dy = y - y0; y0 = y; acc += dy;
+      if (!active && Math.abs(acc) < 8) return;   // umbral: distinguir de un tap
+      active = true;
+      // dedo hacia ABAJO (dy>0) = ver texto anterior = rueda ARRIBA (natural).
+      while (Math.abs(acc) >= STEP){ const up = acc > 0; wheel(up, 1); acc += up ? -STEP : STEP; }
+      e.preventDefault(); e.stopPropagation();   // que xterm NO lo mande como arrastre
+    }, { capture:true, passive:false });
+    const end = () => { y0 = null; acc = 0; active = false; };
+    termEl.addEventListener('touchend', end, { capture:true, passive:true });
+    termEl.addEventListener('touchcancel', end, { capture:true, passive:true });
+  }
 })();
 
 /* arranque: pestaña Tareas */

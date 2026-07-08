@@ -171,7 +171,9 @@ function estrategaTools() {
 //    VERBATIM al `claude -p` (byte-idéntico al camino anterior).
 //  - provider fino (API): usamos NUESTRO bucle (llm/loop) con tools de lectura, así el
 //    turno es de segundos (sin cold-start del CLI). Devuelve texto → parseReply igual.
-async function runClaude(prompt) {
+const TURN_TIMEOUT_MS = Number(process.env.ESTRATEGA_TURN_TIMEOUT_MS) || 90000;
+
+async function runClaude(prompt, { onEvent, signal } = {}) {
     const p = provider();
     if (p.name === 'claude_cli') {
         const res = await p.step({ system: prompt, messages: [] });
@@ -179,12 +181,27 @@ async function runClaude(prompt) {
     }
     const { runAgent } = require('../llm/loop');
     const { defs, handlers } = estrategaTools();
-    const r = await runAgent({
-        provider: p, system: prompt,
-        messages: [{ role: 'user', content: 'Procede con este turno. Responde EXCLUSIVAMENTE con el objeto JSON indicado, sin texto alrededor.' }],
-        tools: defs, handlers, maxSteps: 8,
-    });
-    return r.text;
+    // Timeout DURO del turno: nunca más un cuelgue mudo. `ac` corta el bucle entre
+    // pasos; el `guard` que rechaza es el backstop por si una llamada HTTP se cuelga
+    // dentro de un paso (el fetch no recibe la señal). En cualquier caso runClaude
+    // rechaza y respond() deja un mensaje al usuario en vez de quedarse mudo.
+    const ac = new AbortController();
+    if (signal) signal.addEventListener('abort', () => ac.abort(), { once: true });
+    let timer, guardTimer;
+    try {
+        const run = runAgent({
+            provider: p, system: prompt,
+            messages: [{ role: 'user', content: 'Procede con este turno. Responde EXCLUSIVAMENTE con el objeto JSON indicado, sin texto alrededor.' }],
+            tools: defs, handlers, maxSteps: 8, onEvent, signal: ac.signal,
+        });
+        timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
+        const guard = new Promise((_, rej) => {
+            guardTimer = setTimeout(() => rej(new Error(`el turno superó ${Math.round(TURN_TIMEOUT_MS / 1000)}s`)), TURN_TIMEOUT_MS + 500);
+        });
+        const r = await Promise.race([run, guard]);
+        if (r && r.stoppedBy === 'aborted') throw new Error(`el turno superó ${Math.round(TURN_TIMEOUT_MS / 1000)}s`);
+        return r.text;
+    } finally { clearTimeout(timer); clearTimeout(guardTimer); }
 }
 
 // Extrae el primer objeto JSON del texto (el modelo a veces lo envuelve).
@@ -210,14 +227,14 @@ function parseReply(text) {
 
 // Genera el turno del Estratega para una tarea: lee el contexto, llama a claude,
 // guarda el mensaje del asistente y actualiza la definición/estado.
-async function respond(taskId, agentStates = []) {
+async function respond(taskId, agentStates = [], opts = {}) {
     const task = await tasks.get(taskId);
     if (!task) throw new Error('Tarea no encontrada');
     const [messages, mods] = await Promise.all([tasks.messages(taskId), modules.list()]);
     const prompt = buildPrompt({ task, messages, mods, agentStates });
 
     let out;
-    try { out = parseReply(await runClaude(prompt)); }
+    try { out = parseReply(await runClaude(prompt, opts)); }
     catch (e) {
         const msg = 'Ahora mismo no he podido procesar tu mensaje (' + e.message + '). ¿Puedes intentarlo de nuevo?';
         await tasks.addMessage(taskId, 'assistant', msg);

@@ -9,6 +9,7 @@ const tasks     = require('./tasks_store');
 const estratega = require('./estratega');
 const agents    = require('./agents');
 const dbBrowser = require('./db_browser');
+const feed      = require('../orchestrator/estratega_feed');
 
 const wrap = (fn) => (req, res) =>
     Promise.resolve(fn(req, res)).catch(err => {
@@ -125,15 +126,36 @@ router.post('/tasks/:id/messages', wrap(async (req, res) => {
     await agents.syncStatuses(task.id);
     const states = await agents.agentStates(task.id);
     turnInFlight.add(String(task.id));
+    feed.startTurn(task.id);   // panel «Estratega»: pasa a "trabajando…"
     try {
-        const out = await estratega.respond(task.id, states);   // añade la respuesta + (def/estado)
+        // onEvent: retransmite en vivo lo que hace el Estratega (leer/grep/pensar).
+        const out = await estratega.respond(task.id, states, { onEvent: (ev) => feed.fromLoopEvent(task.id, ev) });
         const executed = (out && out.actions && out.actions.length) ? await agents.executeActions(task.id, out.actions) : [];
         const note = summarizeActions(executed);   // feedback de tests/commit/lanzar/errores
-        if (note) await tasks.addMessage(task.id, 'estratega', note);   // técnico → columna del Estratega
-    } finally { turnInFlight.delete(String(task.id)); }
+        if (note) { await tasks.addMessage(task.id, 'estratega', note); feed.publish(task.id, { kind: 'note', line: note }); }
+    } finally { turnInFlight.delete(String(task.id)); feed.endTurn(task.id); }
     const d = await tasks.detail(task.id);
     d.statuses = tasks.STATUSES; d.statusLabel = tasks.STATUS_LABEL;
     res.json(d);
+}));
+
+// Stream SSE de la actividad EN VIVO del Estratega para una tarea (lo que va leyendo,
+// buscando, pensando). Lo consume la columna «Estratega» del panel. Va tras el mismo
+// gate JWT que el resto de /api. X-Accel-Buffering:no → nginx no bufferiza el stream.
+router.get('/tasks/:id/estratega-stream', wrap(async (req, res) => {
+    const task = await ownTask(req, res);
+    if (!task) return;
+    res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+    if (res.flushHeaders) res.flushHeaders();
+    res.write('retry: 3000\n\n');
+    feed.subscribe(task.id, res);
+    const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch (e) { /* */ } }, 25000);
+    req.on('close', () => clearInterval(ka));
 }));
 
 // NOTA: el usuario NO controla a los agentes directamente (no hay endpoints de
