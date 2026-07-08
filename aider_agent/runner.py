@@ -80,29 +80,57 @@ def main():
     a = ap.parse_args()
 
     mod = os.path.abspath(a.module_dir)
+    # Prefijo del módulo dentro del repo git (p.ej. "main/"). Si el módulo ES la raíz
+    # del repo (repo suelto), prefix="" → sin confinamiento (todo es "dentro").
+    repo_root = git(["rev-parse", "--show-toplevel"], mod).stdout.strip() or mod
+    rel = os.path.relpath(mod, repo_root).replace(os.sep, "/")
+    prefix = "" if rel == "." else rel + "/"
     os.chdir(mod)
-    emit("start", module=os.path.basename(mod), model=a.model, brief=a.brief)
+    emit("start", module=os.path.basename(mod), model=a.model, brief=a.brief, repo_prefix=prefix)
 
-    head_before = git(["rev-parse", "HEAD"], mod).stdout.strip()
+    head_before = git(["rev-parse", "HEAD"], repo_root).stdout.strip()
 
     try:
         io = EventIO()
         model = Model(a.model)
         fnames = [os.path.join(mod, f) for f in a.file]
-        coder = Coder.create(main_model=model, io=io, fnames=fnames)
+        # auto_commits: para poder verificar el diff del agente.
+        # dirty_commits=False: NO arrastrar cambios ajenos preexistentes al commit.
+        coder = Coder.create(main_model=model, io=io, fnames=fnames,
+                             auto_commits=True, dirty_commits=False)
         coder.run(a.brief)          # ejecuta el encargo y retorna al terminar
         ok, err = True, None
     except Exception as e:
         ok, err = False, f"{type(e).__name__}: {e}"
         log_stderr("RUNNER ERROR:", err)
 
-    head_after = git(["rev-parse", "HEAD"], mod).stdout.strip()
+    head_after = git(["rev-parse", "HEAD"], repo_root).stdout.strip()
     committed = bool(head_before) and bool(head_after) and head_before != head_after
-    if committed:
-        files = git(["diff", "--name-only", head_before, head_after], mod).stdout.strip().splitlines()
-    else:
-        files = [l[3:] for l in git(["status", "--porcelain"], mod).stdout.strip().splitlines()]
-    emit("done", ok=ok, error=err, committed=committed, commit=head_after[:12], files=files)
+    changed = git(["diff", "--name-only", head_before, head_after], repo_root).stdout.strip().splitlines() if committed else []
+
+    # ── GUARDIÁN DURO: el commit del agente NO puede tocar fuera del módulo ──────
+    violations = [f for f in changed if prefix and not f.startswith(prefix)] if prefix else []
+    confined = not violations
+    reverted = False
+    if violations:
+        # Revertir SOLO los commits del agente con `git revert` (preserva cambios sin
+        # commitear del árbol; no usamos reset --hard para no pisar trabajo ajeno).
+        rv = git(["revert", "--no-edit", f"{head_before}..HEAD"], repo_root)
+        if rv.returncode != 0:
+            git(["revert", "--abort"], repo_root)
+        else:
+            reverted = True
+        emit("violation", files=violations, reverted=reverted,
+             message="cambios fuera del módulo" + (" (revertidos)" if reverted else " (NO se pudo revertir automáticamente)"))
+
+    emit("done",
+         ok=(ok and confined),
+         error=(err or (("cambios fuera del módulo: " + ", ".join(violations)) if violations else None)),
+         confined=confined,
+         committed=(committed and confined),
+         commit=(head_after[:12] if (confined and committed) else head_before[:12]),
+         files=[f for f in changed if (not prefix or f.startswith(prefix))] if confined else [],
+         violations=violations)
 
 
 if __name__ == "__main__":

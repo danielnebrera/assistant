@@ -50,9 +50,22 @@ Cambiar de IA = cambiar `--model` + la clave. **Cero cambios de código** (LiteL
 - GPT: `--model gpt-4o` (o `openai/...`) + `OPENAI_API_KEY`
 - Local: `--model ollama/...`
 
+## Confinamiento por módulo (guardián)
+El runner deriva el prefijo del módulo dentro del repo git y, tras el commit del
+agente, **valida que el diff toque SOLO ese prefijo**. Si hay cambios fuera:
+`git revert` de los commits del agente (preserva cambios sin commitear del árbol) +
+evento `violation` + `done.confined=false`. Es el equivalente agnóstico y determinista
+del hook-guardián de Claude Code. Además `dirty_commits=False` evita arrastrar cambios
+ajenos al commit del agente.
+
 ## Estado
-PoC validada con Claude (haiku): edita código real, auto-commit, eventos por fd 3.
-Pendiente: demo con GPT (falta OPENAI_API_KEY); bridge Node (spawn + leer fd 3 →
-bus `assistant_message` → cierre del workflow + aviso al usuario; respuesta a dudas
-por stdin); confinamiento por módulo (scope de ficheros + validar rutas del diff);
-cableado con el Estratega detrás de flag. NO integrado aún con el proceso vivo.
+Validado con Claude (haiku), sin tocar el proceso vivo:
+- ✅ Hooks/eventos por fd 3 (start/assistant/log/question/done).
+- ✅ Bridge Node (`orchestrator/aider_bridge.js`) + driver de cierre
+  (`orchestrator/aider_agent_driver.js`): eventos → bus `assistant_message` → aviso al
+  usuario en el chat.
+- ✅ Confinamiento por módulo (permite dentro, revierte fuera).
+
+Pendiente: cableado con el Estratega detrás de flag (`AGENT_RUNTIME=aider`) para que una
+tarea REAL use este agente; round-trip de dudas (bloquear en `confirm_ask` y responder por
+stdin desde el usuario); demo con GPT (falta `OPENAI_API_KEY`).
