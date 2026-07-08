@@ -1,0 +1,3 @@
+# Aider como DEPENDENCIA fijada (no forkeado). Nuestra capa fina vive en runner.py.
+# Subir de versión = cambiar aquí y re-probar el adaptador contra la nueva API.
+aider-chat==0.86.2
