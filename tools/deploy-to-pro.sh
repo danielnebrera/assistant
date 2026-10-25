@@ -55,8 +55,11 @@ DB_USER="$(getenv DB_USER)";     DB_USER="${DB_USER:-factory}"
 DB_PASSWORD="$(getenv DB_PASSWORD)"
 DB_DATABASE="$(getenv DB_DATABASE)"; DB_DATABASE="${DB_DATABASE:-factory}"
 PREFIX="${ENV_NAME}_"
-MYSQL=(mysql -h"$DB_HOST" -u"$DB_USER" ${DB_PASSWORD:+-p"$DB_PASSWORD"} "$DB_DATABASE")
-DUMP=(mysqldump -h"$DB_HOST" -u"$DB_USER" ${DB_PASSWORD:+-p"$DB_PASSWORD"} --single-transaction --no-tablespaces "$DB_DATABASE")
+# La contraseña va por MYSQL_PWD (no en la línea de órdenes): así no sale en pantalla,
+# en logs ni en `ps`.
+[ -n "$DB_PASSWORD" ] && export MYSQL_PWD="$DB_PASSWORD"
+MYSQL=(mysql -h"$DB_HOST" -u"$DB_USER" "$DB_DATABASE")
+DUMP=(mysqldump -h"$DB_HOST" -u"$DB_USER" --single-transaction --no-tablespaces "$DB_DATABASE")
 
 OLD_COMMIT="$(git -C "$PRO_DIR" rev-parse HEAD)"
 git -C "$PRO_DIR" fetch --quiet origin "$BRANCH"
@@ -142,6 +145,6 @@ cat <<EOF
 
 Revertir si algo va mal:
   git -C $PRO_DIR reset --hard $OLD_COMMIT
-  zcat $BACKUP_FILE | ${MYSQL[*]}
+  zcat $BACKUP_FILE | mysql -h$DB_HOST -u$DB_USER -p $DB_DATABASE   # pide la contraseña (DB_PASSWORD del .env de pro)
   pm2 restart $PM2_NAME --update-env
 EOF
