@@ -778,11 +778,20 @@ const Term = {
     // Vuelca el texto al terminal por la MISMA vía que teclear (term.paste): así se
     // respeta el "bracketed paste" cuando claude/el shell lo activan y un pegado de
     // varias líneas NO se ejecuta línea a línea.
-    Term.doPaste = (text) => { if (text && Term.current && Term.term){ Term.term.paste(text); return true; } return false; };
+    // Con ratón, el foco vuelve al terminal: el Enter siguiente envía, no repite el pegado.
+    Term.doPaste = (text) => {
+      if (!(text && Term.current && Term.term)) return false;
+      Term.term.paste(text);
+      if (window.matchMedia && matchMedia('(pointer:fine)').matches) Term.term.focus();
+      return true;
+    };
     // Ctrl+Shift+V: misma lógica que el botón "Pegar".
     Term.paste = () => Term.openPaste();
     // Botón derecho = copiar (selección actual o la última guardada).
     $('term').addEventListener('contextmenu', (e) => { e.preventDefault(); Term.copy(); });
+    // Los botones de las barras no se quedan el foco: si no, tras «📥 Pegar» cada Enter
+    // volvía a pulsar el botón (pegaba otra vez) en vez de llegar al terminal.
+    document.querySelectorAll('.term-bar button, #touchbar button').forEach(b => b.addEventListener('mousedown', e => e.preventDefault()));
     Term.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       const k = e.key.toLowerCase();
