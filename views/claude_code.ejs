@@ -6,6 +6,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-unicode11@0.6.0/lib/xterm-addon-unicode11.min.js"></script>
   <style>
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:#0b0f17;color:#d6e0f0;font-family:"Segoe UI",Arial,sans-serif}
@@ -590,6 +591,14 @@ const Tasks = {
     }
   }
 };
+/* Anchos de carácter como tmux/claude (Unicode 11). Con el modo por defecto de xterm
+   (Unicode 6) un emoji ocupa 1 columna aquí y 2 en tmux: el cursor se descuadra y cada
+   tecla redibuja la línea en otro sitio → tras pegar texto con emojis (📥 ✅ ⚠️) el
+   prompt de claude se veía repetido/con restos hasta pulsar Esc. */
+function useUnicode11(term){
+  try { term.loadAddon(new Unicode11Addon.Unicode11Addon()); term.unicode.activeVersion = '11'; } catch(e){}
+}
+
 /* ════════════ Logs en vivo de los agentes (un xterm por columna) ════════════ */
 const AgentLogs = {
   ws:null, cols:new Map(), byTmux:new Map(), _retry:null, _hb:null, _lastRx:0,
@@ -605,7 +614,8 @@ const AgentLogs = {
       const el = document.getElementById('agterm-' + a.id);
       if (!el || !a.tmux_name) return;
       const term = new Terminal({ cursorBlink:false, fontSize:11, fontFamily:'Consolas,Menlo,monospace',
-        scrollback:3000, theme:{ background:'#0b1120', foreground:'#9fb2d8' } });
+        scrollback:3000, allowProposedApi:true, theme:{ background:'#0b1120', foreground:'#9fb2d8' } });
+      useUnicode11(term);
       const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
       term.open(el); try { fit.fit(); } catch(e){}
       // Solo lectura: el usuario NO escribe a los agentes (solo habla con el chat;
@@ -726,7 +736,8 @@ const Term = {
   activate(){ if (!Term.inited){ Term.init(); Term.connect(); Term.inited = true; } else { Term.doFit(); } },
   init(){
     Term.term = new Terminal({ cursorBlink:true, fontSize:13, fontFamily:'Consolas,Menlo,monospace',
-      scrollback:5000, theme:{ background:'#0b0f17', foreground:'#d6e0f0' } });
+      scrollback:5000, allowProposedApi:true, theme:{ background:'#0b0f17', foreground:'#d6e0f0' } });
+    useUnicode11(Term.term);
     Term.fit = new FitAddon.FitAddon(); Term.term.loadAddon(Term.fit);
     Term.term.open($('term')); Term.doFit();
     // Móvil: en el primer pintado la barra de direcciones aún no ha asentado la altura;
