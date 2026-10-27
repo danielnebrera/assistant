@@ -778,12 +778,22 @@ const Term = {
     // Vuelca el texto al terminal por la MISMA vía que teclear (term.paste): así se
     // respeta el "bracketed paste" cuando claude/el shell lo activan y un pegado de
     // varias líneas NO se ejecuta línea a línea.
-    // Con ratón, el foco vuelve al terminal: el Enter siguiente envía, no repite el pegado.
+    // Tras pegar, el foco vuelve SIEMPRE al terminal (salvo si se pulsó con el dedo, para
+    // no sacar el teclado del móvil): el Enter siguiente envía, no repite el pegado.
+    // No usamos matchMedia('(pointer:fine)'): en portátiles Windows con pantalla táctil
+    // Chrome dice "coarse" aunque uses ratón, y el foco se quedaba en el botón.
     Term.doPaste = (text) => {
       if (!(text && Term.current && Term.term)) return false;
       Term.term.paste(text);
-      if (window.matchMedia && matchMedia('(pointer:fine)').matches) Term.term.focus();
+      Term.refocus();
       return true;
+    };
+    Term._lastPointer = 'mouse';
+    document.addEventListener('pointerdown', e => { Term._lastPointer = e.pointerType || 'mouse'; }, true);
+    Term.refocus = () => {
+      const a = document.activeElement;
+      if (a && a.tagName === 'BUTTON') a.blur();
+      if (Term._lastPointer !== 'touch' && Term.term) setTimeout(() => Term.term.focus(), 0);
     };
     // Ctrl+Shift+V: misma lógica que el botón "Pegar".
     Term.paste = () => Term.openPaste();
@@ -791,7 +801,10 @@ const Term = {
     $('term').addEventListener('contextmenu', (e) => { e.preventDefault(); Term.copy(); });
     // Los botones de las barras no se quedan el foco: si no, tras «📥 Pegar» cada Enter
     // volvía a pulsar el botón (pegaba otra vez) en vez de llegar al terminal.
-    document.querySelectorAll('.term-bar button, #touchbar button').forEach(b => b.addEventListener('mousedown', e => e.preventDefault()));
+    document.querySelectorAll('.term-bar button, #touchbar button').forEach(b => {
+      b.tabIndex = -1;                                   // tampoco se llega a ellos con Tab
+      b.addEventListener('mousedown', e => e.preventDefault());
+    });
     Term.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       const k = e.key.toLowerCase();
@@ -830,10 +843,12 @@ const Term = {
   // abrimos un cuadro donde el usuario pega con el método nativo del dispositivo.
   openPaste(forceOverlay){
     if (!Term.current){ alert('Abre o selecciona una sesión primero.'); return; }
+    const a = document.activeElement; if (a && a.tagName === 'BUTTON') a.blur();   // el botón nunca se queda el foco
     if (!forceOverlay && navigator.clipboard && navigator.clipboard.readText){
       navigator.clipboard.readText()
         .then(t => { if (t){ Term.doPaste(t); Term.flash('Pegado ✓ (' + t.length + ')'); } else Term._showPaste(); })
-        .catch(() => Term._showPaste());
+        .catch(() => Term._showPaste())
+        .finally(() => { if (!$('pasteOv').classList.contains('on')) Term.refocus(); });
       return;
     }
     Term._showPaste();
