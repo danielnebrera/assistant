@@ -15,22 +15,16 @@
 const WebSocket = require('ws');
 const pty       = require('node-pty');
 const path      = require('path');
-const { execFile } = require('child_process');
 const auth      = require('../lib/auth');
 const store     = require('./sessions_store');
 const agents    = require('./agents');
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const WORK_DIR   = process.env.CLAUDE_WORK_DIR || path.join(__dirname, '..', '..'); // raíz de factory3_dev
-const HOME_DIR   = process.env.CLAUDE_HOME || '/home/ubuntu';
+const { tmuxEnv, tmuxExec } = require('../lib/tmux_env');
 
 /* ── tmux helpers ──────────────────────────────────────────────────────────── */
-function tmux(args) {
-    return new Promise(resolve => {
-        execFile('tmux', args, { env: { ...process.env, HOME: HOME_DIR } },
-            (err, stdout) => resolve({ ok: !err, stdout: (stdout || '').trim() }));
-    });
-}
+const tmux = (args) => tmuxExec(args);
 const tmuxExists = async (name) => (await tmux(['has-session', '-t', name])).ok;
 async function tmuxPanePid(name) {
     const r = await tmux(['list-panes', '-t', name, '-F', '#{pane_pid}']);
@@ -41,11 +35,25 @@ const tmuxCreate = async (name, cwd, cols, rows) =>
     (await tmux(['new-session', '-d', '-s', name, '-c', cwd, '-x', String(cols || 120), '-y', String(rows || 30), CLAUDE_BIN])).ok;
 
 function spawnBridge(name, cols, rows) {
-    return pty.spawn('tmux', ['attach-session', '-d', '-t', name], {
+    // SIN `-d`: antes se pasaba `-d` para que un attach nuevo desenganchara a
+    // cualquier otro cliente de la sesión. Pero cada vez que el navegador
+    // reconectaba y re-enganchaba, ese `-d` echaba al cliente tmux viejo y tmux
+    // escupía "[detached (from session ...)]" en su pty, que se reenviaba al
+    // terminal del usuario ("detached from session" cada poco). Ahora garantizamos
+    // un único cliente por sesión matándolo nosotros en silencio (SIGHUP, sin
+    // banner) en openBridge(); en tmux>=3.1 window-size=latest, así que co-attach
+    // no encoge el terminal.
+    return pty.spawn('tmux', ['attach-session', '-t', name], {
         name: 'xterm-256color', cols: cols || 120, rows: rows || 30, cwd: WORK_DIR,
-        env: { ...process.env, HOME: HOME_DIR, TERM: 'xterm-256color', FORCE_COLOR: '1' },
+        env: tmuxEnv({ TERM: 'xterm-256color', FORCE_COLOR: '1' }),
     });
 }
+
+// Registro GLOBAL de bridges vivos por nombre de sesión tmux (no por ws): un
+// bridge que quedó colgado tras una reconexión pertenece a OTRO ws, así que
+// ws._bridges no basta para detectarlo. Con esto, un attach nuevo cierra en
+// silencio el cliente que hubiera en esa sesión antes de crear el suyo.
+const activeByName = new Map();   // tmux name -> bridge
 
 /* ── auth LOCAL: JWT + permiso embebido, sin red ─────────────────────────────── */
 function authorise(req) {
@@ -90,6 +98,11 @@ function setupWebSocket(server) {
 
         ws.on('error', e => console.error('[assistant] WS error:', e.message));
         ws.on('message', raw => {
+            // Cualquier tráfico entrante prueba que el cliente sigue vivo. Sin esto,
+            // el heartbeat solo miraba el pong del PROTOCOLo; si ese pong se demoraba
+            // (pestaña en segundo plano, GC), terminaba un socket que en realidad
+            // estaba activo (mandando pings/teclas) → desconexión espuria.
+            ws.isAlive = true;
             let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
             if (!ready) { queue.push(msg); return; }
             dispatch(msg);
@@ -107,14 +120,33 @@ function setupWebSocket(server) {
 }
 
 function openBridge(ws, sessionId, name, cols, rows) {
-    const prev = ws._bridges.get(sessionId);
-    if (prev) { prev.detaching = true; try { prev.proc.kill(); } catch {} ws._bridges.delete(sessionId); }
+    // ¿Ya hay un cliente enganchado a ESTA sesión tmux? Puede ser este mismo ws
+    // re-enganchando, otra pestaña, o —el caso frecuente— un bridge viejo que
+    // quedó vivo tras una reconexión. Lo cerramos NOSOTROS con SIGHUP: el cliente
+    // tmux muere sin imprimir el banner "[detached (from session ...)]" (que es
+    // lo que antes hacía el flag `-d`). Así nunca hay dos clientes a la vez y no
+    // se filtra ese mensaje al terminal.
+    const existing = activeByName.get(name);
+    if (existing) {
+        existing.detaching = true;
+        try { existing.proc.kill(); } catch {}
+        existing.ws._bridges.delete(existing.sessionId);
+        // Si era OTRA conexión (otra pestaña real), avísale por mensaje de app
+        // —limpio, no el banner de tmux— de que ha perdido la sesión.
+        if (existing.ws !== ws) { try { send(existing.ws, { type: 'detached', sessionId: existing.sessionId }); } catch {} }
+        activeByName.delete(name);
+    }
     let proc;
     try { proc = spawnBridge(name, cols, rows); }
     catch (e) { send(ws, { type: 'error', sessionId, data: 'Error al enganchar: ' + e.message }); return; }
-    const bridge = { proc, name, detaching: false };
+    const bridge = { proc, name, ws, sessionId, detaching: false };
     ws._bridges.set(sessionId, bridge);
-    proc.onData(d => { try { send(ws, { type: 'output', sessionId, data: d }); } catch {} });
+    activeByName.set(name, bridge);
+    // Si estamos cerrando este bridge a propósito (detaching), NO reenviamos su
+    // salida: al matar el pty, el cliente tmux ve EIO en su tty y escupe
+    // "[Lost TTY]" (y a veces basura de redibujado). Eso llegaba al terminal del
+    // usuario cada vez que el WS se caía en un idle. Con la guarda, muere en silencio.
+    proc.onData(d => { if (bridge.detaching) return; try { send(ws, { type: 'output', sessionId, data: d }); } catch {} });
     proc.onExit(async () => {
         // Solo retiramos la entrada si sigue siendo ESTE bridge. Al cambiar de
         // sesión y volver, openBridge mata el bridge viejo y crea uno nuevo de
@@ -122,6 +154,7 @@ function openBridge(ws, sessionId, name, cols, rows) {
         // borraba el bridge nuevo del mapa → los 'input' se descartaban y había
         // que refrescar la página para volver a escribir.
         if (ws._bridges.get(sessionId) === bridge) ws._bridges.delete(sessionId);
+        if (activeByName.get(name) === bridge) activeByName.delete(name);
         if (bridge.detaching) return;
         if (await tmuxExists(name)) send(ws, { type: 'detached', sessionId });
         else { store.update(sessionId, { status: 'exited' }); send(ws, { type: 'exit', sessionId, code: 0 }); }
